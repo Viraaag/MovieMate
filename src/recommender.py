@@ -7,6 +7,12 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 import difflib
 import datetime
 from groq import Groq
+from dotenv import load_dotenv
+import openai
+import os
+# Load Groq API key from .env file
+load_dotenv(dotenv_path="api.env")
+openai.api_key = os.getenv("GROQ_API_KEY")
 
 
 
@@ -134,7 +140,7 @@ class HybridRecommender:
             return result['id'].values[0]
 
         all_titles = self.metadata["title_lower"].tolist()
-        close_matches = difflib.get_close_matches(title, all_titles, n=3, cutoff=0.6)
+        close_matches = difflib.get_close_matches(title, all_titles, n=3, cutoff=0.85)
 
         if close_matches:
             print("\n[INFO] Movie title not found.")
@@ -158,55 +164,115 @@ class HybridRecommender:
                 raise ValueError(f"No similar movie titles found for '{title}'.")
 
     def fetch_and_add_movie_from_ai(self, title):
-        print(f"[INFO] Trying to fetch '{title}' using Groq LLM...")
+        import os
+        from openai import OpenAI
+        from dotenv import load_dotenv
 
-        os.environ["GROQ_API_KEY"] = "your-groq-api-key"
-
-        client = Groq(api_key="gsk_1234567890")
-
-        prompt = f"""
-        Give metadata for a movie titled '{title}' in JSON with fields: 
-        title, overview, genres (as string), release_date (YYYY-MM-DD), 
-        cast (2-3 actors), crew (1 director), keywords (2-3), 
-        original_language (e.g., 'en'), production_countries (e.g., 'USA')
-        """
-
-        response = client.chat.completions.create(
-            model="llama3-8b-8192",
-            messages=[
-                {"role": "system", "content": "You are a movie metadata assistant."},
-                {"role": "user", "content": prompt}
-            ]
-        )
-
-        import json
-        try:
-            ai_movie = json.loads(response.choices[0].message.content)
-        except Exception as e:
-            print("[ERROR] Could not parse AI response:", e)
+    # Load Groq API key from api.env
+        load_dotenv("api.env")
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            print("[ERROR] GROQ_API_KEY not found in api.env")
             return None
 
-        ai_movie["id"] = str(len(self.metadata) + 1)
-        ai_movie["soup"] = (
-            ai_movie.get("overview", "") + " " +
-            ai_movie.get("genres", "") + " " +
-            ai_movie.get("keywords", "") + " " +
-            ai_movie.get("cast", "") + " " +
-            ai_movie.get("crew", "")
+    # Initialize Groq client
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1"
         )
-        ai_movie["year"] = pd.to_datetime(ai_movie.get("release_date", ""), errors="coerce").year
 
-        # Add to metadata and save
-        self.metadata = pd.concat([self.metadata, pd.DataFrame([ai_movie])], ignore_index=True)
-        self.metadata.to_csv("data/movies_metadata_updated.csv", index=False)
+        print(f"[INFO] Querying Groq for metadata of '{title}'...")
+        prompt = f"""
+        Imagine you're a movie database. Given the title '{title}', provide the following:
+        - Overview
+        - Genre(s)
+        - Release date (YYYY-MM-DD)
+        - Top 2 Cast
+        - Director
+        - Keywords
+        - Original Language (ISO 639-1 code)
+        - Production Country (e.g., USA, India)
 
-        # Rebuild TF-IDF
-        tfidf = TfidfVectorizer(stop_words="english")
-        self.tfidf_matrix = tfidf.fit_transform(self.metadata["soup"])
-        self.movie_indices = pd.Series(self.metadata.index, index=self.metadata["id"])
+        Respond in JSON format with keys: title, overview, genres, release_date, cast, crew, keywords, original_language, production_countries.
+        """
 
-        print(f"[INFO] '{title}' fetched using Groq and added to dataset.")
-        return ai_movie["id"]
+        try:
+            response = client.chat.completions.create(
+                model="llama3-70b-8192",
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            import re
+            import json5
+
+            content = response.choices[0].message.content.strip()
+
+            # Extract the first JSON object from the text using regex
+            json_match = re.search(r"\{[\s\S]*\}", content)
+            if not json_match:
+                raise ValueError("No valid JSON found in Groq response.")
+
+            json_str = json_match.group(0)
+            print("[INFO] Extracted JSON:\n", json_str)
+
+            try:
+                ai_movie = json5.loads(json_str)
+                # Normalize fields: convert list fields to space-separated strings
+                ai_movie["genres"] = " ".join(ai_movie["genres"]) if isinstance(ai_movie["genres"], list) else str(ai_movie["genres"])
+                ai_movie["keywords"] = " ".join(ai_movie["keywords"]) if isinstance(ai_movie["keywords"], list) else str(ai_movie["keywords"])
+
+                def normalize_people_field(field):
+                    if isinstance(field, list):
+                        names = []
+                        for item in field:
+                            if isinstance(item, dict) and "name" in item:
+                                names.append(item["name"])
+                            elif isinstance(item, str):
+                                names.append(item)
+                        return " ".join(names)
+                    return str(field)
+
+                ai_movie["cast"] = normalize_people_field(ai_movie.get("cast", []))
+                ai_movie["crew"] = normalize_people_field(ai_movie.get("crew", []))
+
+                ai_movie["production_countries"] = " ".join(ai_movie["production_countries"]) if isinstance(ai_movie["production_countries"], list) else str(ai_movie["production_countries"])
+
+            except Exception as e:
+                print("[ERROR] Failed to parse JSON:", e)
+                return None
+
+
+            ai_movie["id"] = str(max(self.metadata["id"].astype(str).astype(int), default=100000) + 1)
+
+
+            # Construct soup and year
+            ai_movie["soup"] = (
+                ai_movie["overview"] + " " +
+                ai_movie["genres"] + " " +
+                ai_movie["keywords"] + " " +
+                ai_movie["cast"] + " " +
+                ai_movie["crew"]
+            )
+            ai_movie["year"] = pd.to_datetime(ai_movie["release_date"], errors="coerce").year
+
+            # Append to metadata
+            self.metadata = pd.concat([self.metadata, pd.DataFrame([ai_movie])], ignore_index=True)
+            self.metadata.to_csv("data/movies_metadata_updated.csv", index=False)
+
+            # Rebuild TF-IDF model to include the new movie
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            tfidf = TfidfVectorizer(stop_words="english")
+            self.tfidf_matrix = tfidf.fit_transform(self.metadata["soup"].fillna(""))
+            self.movie_indices = pd.Series(self.metadata.index, index=self.metadata["id"])
+
+            print(f"[INFO] '{title}' added to the dataset and models updated.")
+            return ai_movie["id"]
+
+        except Exception as e:
+            print("[ERROR] Failed to fetch movie from Groq:", e)
+            return None
+
 
 
 
@@ -229,7 +295,8 @@ class HybridRecommender:
         return result
 
     def hybrid_recommend(self, user_id, movie_id, top_n=10, alpha=0.3, preferred_language=None, preferred_country=None):
-        content_recs = self.content_recommend(movie_id, top_n=top_n)
+        content_recs = self.content_recommend(movie_id, top_n=50)  # get more raw candidates
+
         if preferred_language:
             content_recs = content_recs[content_recs["original_language"] == preferred_language]
 
@@ -241,7 +308,7 @@ class HybridRecommender:
         user_rated_ids = user_rated_ids[user_rated_ids["userId"] == int(user_id)]["movieId"].astype(str).tolist()
         content_recs = content_recs[~content_recs["id"].isin(user_rated_ids)]
 
-        content_recs = content_recs[content_recs["content_score"] > 0.2]
+        #content_recs = content_recs[content_recs["content_score"] > 0.2]
         if content_recs.empty:
             raise ValueError("No sufficiently similar movies found to recommend.")
 
@@ -264,18 +331,33 @@ class HybridRecommender:
         content_recs["match percentage"] = content_recs["match percentage"].round(1)
 
         # Filter out very low match percentages (optional threshold, tweakable)
-        content_recs = content_recs[content_recs["match percentage"] > 5.0]
+        content_recs = content_recs[content_recs["match percentage"] > 1.0]
         if len(content_recs) < top_n:
             print(f"[INFO] Only {len(content_recs)} strong recommendations found (above 5% match).")
 
 
+        # Final fallback check
         if content_recs.empty:
-            raise ValueError("No sufficiently similar movies found to recommend.")
+            print("Error: No sufficiently similar movies found to recommend.")
+            return pd.DataFrame()
+
+        print("[DEBUG] Last 5 IDs:", self.metadata["id"].tail())
+
+        input_row = self.metadata[self.metadata["id"].astype(str) == str(movie_id)]
+        if input_row.empty:
+            raise ValueError(f"[ERROR] Movie with ID {movie_id} not found in metadata after update.")
+        input_movie = input_row.iloc[0]
 
 
-        input_movie = self.metadata[self.metadata["id"] == movie_id].iloc[0]
+
+        print("[DEBUG] Checking movie ID:", movie_id)
+        print("[DEBUG] Available IDs:", self.metadata["id"].tolist()[:10])  # just the first 10 to avoid overflow
+        print("[DEBUG] Matching row:\n", self.metadata[self.metadata["id"] == movie_id])
+
+
         input_director = input_movie["crew"]
         input_cast = input_movie["cast"].split()
+
 
         content_recs["same_director"] = content_recs["crew"].apply(lambda x: input_director in x)
         content_recs["shared_actor"] = content_recs["cast"].apply(lambda x: any(actor in x.split() for actor in input_cast))
@@ -299,9 +381,10 @@ class HybridRecommender:
         if "Shared Actor" in content_recs.columns:
             content_recs.drop(columns=["Shared Actor", "Same Director"], inplace=True, errors='ignore')
 
-        return content_recs.sort_values("match percentage", ascending=False)[
+        return content_recs.sort_values("match percentage", ascending=False).head(top_n)[
             ["title", "genres", "year", "match percentage", "Why Recommended"]
         ].reset_index(drop=True)
+
 
 
 
@@ -318,7 +401,14 @@ if __name__ == "__main__":
 
     try:
         movie_id = recommender.get_movie_id_from_title(movie_title)
+
+# 🐛 DEBUG: Show matched movie details
+        print(f"[DEBUG] Matched movie ID: {movie_id}")
+        print(recommender.metadata[recommender.metadata["id"] == movie_id][["title", "genres", "cast", "crew", "soup"]])
+
         recommendations = recommender.hybrid_recommend(int(user_id), movie_id, top_n=5)
+
+
         print("\nTop Recommendations:")
         print(recommendations)
 
