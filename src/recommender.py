@@ -5,6 +5,8 @@ from surprise.model_selection import train_test_split
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 import difflib
+import datetime
+
 
 class HybridRecommender:
     def __init__(self, ratings_path, metadata_path, credits_path, keywords_path):
@@ -25,9 +27,6 @@ class HybridRecommender:
         target_words = set(target_title.lower().split())
         return len(base_words & target_words) / len(base_words)
 
-    def genre_overlap(self, input_genres, genres):
-        return len(input_genres & set(genres.split())) / len(input_genres) if input_genres else 0
-
     def _prepare_models(self):
         print("[INFO] Loading and merging metadata, credits, and keywords...")
         metadata = pd.read_csv(self.metadata_path, low_memory=False)
@@ -38,7 +37,8 @@ class HybridRecommender:
         credits['id'] = credits['id'].astype(str)
         keywords['id'] = keywords['id'].astype(str)
 
-        metadata = metadata[["id", "title", "overview", "genres", "release_date"]]
+        metadata = metadata[["id", "title", "overview", "genres", "release_date", "original_language", "production_countries"]]
+
         metadata = metadata.merge(credits, on='id')
         metadata = metadata.merge(keywords, on='id')
 
@@ -90,7 +90,11 @@ class HybridRecommender:
             metadata["crew"]
         )
 
-        metadata["year"] = pd.to_datetime(metadata["release_date"], errors="coerce").dt.year
+        metadata["year"] = pd.to_datetime(metadata["release_date"], errors="coerce").dt.year.astype("Int64")
+        metadata["original_language"] = metadata["original_language"].astype(str)
+        metadata["production_countries"] = metadata["production_countries"].apply(lambda x: parse_features(x, "name"))
+
+
 
         if metadata["soup"].apply(lambda x: isinstance(x, float)).any():
             print("[ERROR] Float found in soup column:")
@@ -163,8 +167,14 @@ class HybridRecommender:
         result["content_score"] = scores
         return result
 
-    def hybrid_recommend(self, user_id, movie_id, top_n=10, alpha=0.3):
+    def hybrid_recommend(self, user_id, movie_id, top_n=10, alpha=0.3, preferred_language=None, preferred_country=None):
         content_recs = self.content_recommend(movie_id, top_n=top_n)
+        if preferred_language:
+            content_recs = content_recs[content_recs["original_language"] == preferred_language]
+
+        if preferred_country:
+            content_recs = content_recs[content_recs["production_countries"].str.contains(preferred_country, na=False)]
+
 
         user_rated_ids = pd.read_csv(self.ratings_path)
         user_rated_ids = user_rated_ids[user_rated_ids["userId"] == int(user_id)]["movieId"].astype(str).tolist()
@@ -178,16 +188,17 @@ class HybridRecommender:
         content_recs["hybrid_score"] = alpha * content_recs["cf_score"] + (1 - alpha) * content_recs["content_score"]
 
         input_genres = set(self.metadata[self.metadata["id"] == movie_id]["genres"].values[0].split())
-        content_recs["genre_boost"] = content_recs["genres"].apply(lambda g: self.genre_overlap(input_genres, g))
+        genre_overlap = lambda genres: len(input_genres & set(genres.split())) / len(input_genres) if input_genres else 0
+        content_recs["genre_boost"] = content_recs["genres"].apply(genre_overlap)
         content_recs["hybrid_score"] += 0.15 * content_recs["genre_boost"]
 
-        content_recs["title_boost"] = content_recs["title"].apply(lambda x: self.title_overlap_boost(
-            self.metadata[self.metadata["id"] == movie_id]["title"].values[0], x))
+        content_recs["title_boost"] = content_recs["title"].apply(lambda x: self.title_overlap_boost(self.metadata[self.metadata["id"] == movie_id]["title"].values[0], x))
         content_recs["hybrid_score"] += 0.2 * content_recs["title_boost"]
 
         min_score = content_recs["hybrid_score"].min()
         max_score = content_recs["hybrid_score"].max()
         eps = 1e-5
+
         content_recs["match percentage"] = ((content_recs["hybrid_score"] - min_score + eps) / (max_score - min_score + eps)) * 100
         content_recs["match percentage"] = content_recs["match percentage"].round(1)
 
@@ -198,21 +209,31 @@ class HybridRecommender:
         content_recs["same_director"] = content_recs["crew"].apply(lambda x: input_director in x)
         content_recs["shared_actor"] = content_recs["cast"].apply(lambda x: any(actor in x.split() for actor in input_cast))
 
-        content_recs["shared_actor"] = content_recs["shared_actor"].apply(lambda x: "✔" if x else "✖")
-        content_recs["same_director"] = content_recs["same_director"].apply(lambda x: "✔" if x else "✖")
-
-        # Rename columns for cleaner output
         content_recs.rename(columns={
             "shared_actor": "Shared Actor",
             "same_director": "Same Director"
         }, inplace=True)
 
+        def explain(row):
+            reasons = []
+            if row["Same Director"]: reasons.append("✅ Same Director")
+            if row["Shared Actor"]: reasons.append("🎭 Shared Actor")
+            if row["genre_boost"] > 0.3: reasons.append("🎯 Genre Match")
+            if row["content_score"] > 0.5: reasons.append("🧠 Content Similarity")
+            return ", ".join(reasons)
+
+        content_recs["Why Recommended"] = content_recs.apply(explain, axis=1)
+
+        # Remove 'Shared Actor' and 'Same Director' before returning
+        if "Shared Actor" in content_recs.columns:
+            content_recs.drop(columns=["Shared Actor", "Same Director"], inplace=True, errors='ignore')
+
         return content_recs.sort_values("match percentage", ascending=False)[
-            ["title", "genres", "year", "match percentage", "Shared Actor", "Same Director"]
+            ["title", "genres", "year", "match percentage", "Why Recommended"]
         ].reset_index(drop=True)
 
 
-# Run the recommender
+
 if __name__ == "__main__":
     recommender = HybridRecommender(
         ratings_path="data/ratings_small.csv",
@@ -236,6 +257,14 @@ if __name__ == "__main__":
             if indices:
                 not_liked_titles = recommendations.iloc[indices]["title"].tolist()
                 print("Thanks! You didn't like:", not_liked_titles)
+
+                # Log feedback to CSV
+                feedback_df = pd.DataFrame({
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "user_id": [user_id] * len(not_liked_titles),
+                    "title": not_liked_titles
+                })
+                feedback_df.to_csv("feedback_log.csv", mode='a', index=False, header=not pd.io.common.file_exists("feedback_log.csv"))
 
         save = input("Do you want to save recommendations to a CSV? (y/n): ").strip().lower()
         if save == "y":
