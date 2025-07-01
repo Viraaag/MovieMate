@@ -1,0 +1,28 @@
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# VSCode or PyCharm settings
+.vscode/
+.idea/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Streamlit cache
+.streamlit/
+
+# Dataset and CSV outputs (optional)
+data/
+*.csv
+
+# Conda environment
+env/
+.venv/
+
+# Ignore large datasets
+data/ratings.csv
+data/credits.csv
+data/*.csv
+data/ratings.csv
+data/credits.csv
