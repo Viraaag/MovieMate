@@ -26,3 +26,6 @@ data/credits.csv
 data/*.csv
 data/ratings.csv
 data/credits.csv
+
+.env
+api.env

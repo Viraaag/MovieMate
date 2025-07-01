@@ -6,6 +6,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 import difflib
 import datetime
+from groq import Groq
+
 
 
 class HybridRecommender:
@@ -148,7 +150,66 @@ class HybridRecommender:
             else:
                 raise ValueError("No valid movie selected.")
         else:
-            raise ValueError(f"No similar movie titles found for '{title}'.")
+            print(f"[INFO] '{title}' not found in the dataset.")
+            use_ai = input("Would you like to try fetching movie data from AI? (y/n): ").strip().lower()
+            if use_ai == "y":
+                return self.fetch_and_add_movie_from_ai(title)
+            else:
+                raise ValueError(f"No similar movie titles found for '{title}'.")
+
+    def fetch_and_add_movie_from_ai(self, title):
+        print(f"[INFO] Trying to fetch '{title}' using Groq LLM...")
+
+        os.environ["GROQ_API_KEY"] = "your-groq-api-key"
+
+        client = Groq(api_key="gsk_1234567890")
+
+        prompt = f"""
+        Give metadata for a movie titled '{title}' in JSON with fields: 
+        title, overview, genres (as string), release_date (YYYY-MM-DD), 
+        cast (2-3 actors), crew (1 director), keywords (2-3), 
+        original_language (e.g., 'en'), production_countries (e.g., 'USA')
+        """
+
+        response = client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[
+                {"role": "system", "content": "You are a movie metadata assistant."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+
+        import json
+        try:
+            ai_movie = json.loads(response.choices[0].message.content)
+        except Exception as e:
+            print("[ERROR] Could not parse AI response:", e)
+            return None
+
+        ai_movie["id"] = str(len(self.metadata) + 1)
+        ai_movie["soup"] = (
+            ai_movie.get("overview", "") + " " +
+            ai_movie.get("genres", "") + " " +
+            ai_movie.get("keywords", "") + " " +
+            ai_movie.get("cast", "") + " " +
+            ai_movie.get("crew", "")
+        )
+        ai_movie["year"] = pd.to_datetime(ai_movie.get("release_date", ""), errors="coerce").year
+
+        # Add to metadata and save
+        self.metadata = pd.concat([self.metadata, pd.DataFrame([ai_movie])], ignore_index=True)
+        self.metadata.to_csv("data/movies_metadata_updated.csv", index=False)
+
+        # Rebuild TF-IDF
+        tfidf = TfidfVectorizer(stop_words="english")
+        self.tfidf_matrix = tfidf.fit_transform(self.metadata["soup"])
+        self.movie_indices = pd.Series(self.metadata.index, index=self.metadata["id"])
+
+        print(f"[INFO] '{title}' fetched using Groq and added to dataset.")
+        return ai_movie["id"]
+
+
+
 
     def content_recommend(self, movie_id, top_n=10):
         if movie_id not in self.movie_indices:
@@ -201,6 +262,16 @@ class HybridRecommender:
 
         content_recs["match percentage"] = ((content_recs["hybrid_score"] - min_score + eps) / (max_score - min_score + eps)) * 100
         content_recs["match percentage"] = content_recs["match percentage"].round(1)
+
+        # Filter out very low match percentages (optional threshold, tweakable)
+        content_recs = content_recs[content_recs["match percentage"] > 5.0]
+        if len(content_recs) < top_n:
+            print(f"[INFO] Only {len(content_recs)} strong recommendations found (above 5% match).")
+
+
+        if content_recs.empty:
+            raise ValueError("No sufficiently similar movies found to recommend.")
+
 
         input_movie = self.metadata[self.metadata["id"] == movie_id].iloc[0]
         input_director = input_movie["crew"]
