@@ -6,8 +6,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 import difflib
 
-#Main body
-
 class HybridRecommender:
     def __init__(self, ratings_path, metadata_path, credits_path, keywords_path):
         self.ratings_path = ratings_path
