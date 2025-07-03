@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import ast
 from surprise import Dataset, Reader, SVD
@@ -9,7 +10,6 @@ import datetime
 from groq import Groq
 from dotenv import load_dotenv
 import openai
-import os
 # Load Groq API key from .env file
 load_dotenv(dotenv_path="api.env")
 openai.api_key = os.getenv("GROQ_API_KEY")
