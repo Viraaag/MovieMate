@@ -6,6 +6,7 @@ import axios from "axios";
 
 import Hero from "./components/Hero";
 import Navbar from "./components/Navbar";
+import Footer from "./components/Footer";
 
 interface FormData {
   movie_title: string;
@@ -78,6 +79,8 @@ export default function App() {
       />
   
       <RecommendationTable recommendations={recommendations} />
+      <Footer />
     </div>
+    
   );
 }

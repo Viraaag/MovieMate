@@ -2,6 +2,7 @@
 
 const Hero = () => {
     const posterUrls = [
+        
         "https://m.media-amazon.com/images/I/813dE2pH7XL._UF1000,1000_QL80_.jpg", // Matrix
         "https://m.media-amazon.com/images/M/MV5BOTgyOGQ1NDItNGU3Ny00MjU3LTg2YWEtNmEyYjBiMjI1Y2M5XkEyXkFqcGc@._V1_.jpg", // Inception
         "https://resizing.flixster.com/-XZAfHZM39UwaGJIFWKAE8fS0ak=/v3/t/assets/p10543523_p_v8_as.jpg", // Interstellar
@@ -12,6 +13,7 @@ const Hero = () => {
         
         "https://m.media-amazon.com/images/M/MV5BODk4ZTgwZWYtNDMyYi00NTczLWI3NGYtMGVjZmQ3MDUzZDliXkEyXkFqcGc@._V1_.jpg",
         "https://assets-prd.ignimgs.com/2022/01/26/thebatman-newbutton-1643232430643.jpg",
+        
 
     ];
 
@@ -26,7 +28,7 @@ const Hero = () => {
                             <img
                                 src={url}
                                 alt="Movie Poster"
-                                className="w-full h-full object-cover brightness-75"
+                                className="w-full h-full object-cover brightness-85"
                             />
                         </div>
                     ))}
@@ -50,7 +52,7 @@ const Hero = () => {
                     </p>
                     <a
                         href="#recommend"
-                        className="bg-pink-600 hover:bg-pink-700 text-white px-8 py-3 rounded-lg text-lg font-semibold shadow-md transition"
+                        className="bg-pink-600 text-white hover:bg-white hover:text-pink-600 px-8 py-3 rounded-lg text-lg font-semibold shadow-md transition"
                     >
                         Get Recommendations
                     </a>
