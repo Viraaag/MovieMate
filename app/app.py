@@ -1,3 +1,5 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import sys
 import os
 
@@ -5,41 +7,50 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.recommender import HybridRecommender
-import streamlit as st
-import pandas as pd
 
-# Initialize recommender
-@st.cache_resource
-def load_recommender():
-    return HybridRecommender(
-        ratings_path="data/ratings_small.csv",
-        metadata_path="data/movies_metadata.csv",
-        credits_path="data/credits.csv",
-        keywords_path="data/keywords.csv"
-    )
+app = Flask(__name__)
+CORS(app, resources={r"/recommend": {"origins": ["http://localhost:5173", "http://localhost:3000", "http://localhost:5000"]}})
 
-recommender = load_recommender()
+# Initialize recommender (cache in global scope)
+recommender = HybridRecommender(
+    ratings_path="data/ratings_small.csv",
+    metadata_path="data/movies_metadata.csv",
+    credits_path="data/credits.csv",
+    keywords_path="data/keywords.csv"
+)
 
-st.title("🎬 MovieMate Recommender")
-
-# Input fields
-movie_title = st.text_input("Enter a movie title:", "Avatar")
-user_id = st.number_input("Enter User ID:", min_value=1, value=1)
-top_n = st.slider("Number of recommendations:", 1, 20, 5)
-
-# Recommend button
-if st.button("Get Recommendations"):
+@app.route('/recommend', methods=['POST'])
+def recommend():
+    data = request.get_json()
+    movie_title = data.get('movie_title')
+    user_id = data.get('user_id')
+    num_recommendations = data.get('num_recommendations', 5)
+    
     try:
-        movie_id = recommender.get_movie_id_from_title(movie_title)
-        recommendations = recommender.hybrid_recommend(user_id, movie_id, top_n=top_n)
-
-        st.success(f"Top {top_n} recommendations for '{movie_title}':")
-
-        # Display styled recommendations
-        st.dataframe(recommendations.style.bar("match percentage", color="#00cc99"))
-
-        # Download CSV
-        csv = recommendations.to_csv(index=False).encode("utf-8")
-        st.download_button("Download CSV", csv, f"{movie_title}_recommendations.csv", "text/csv")
+        movie_id, suggestions, error = recommender.get_movie_id_from_title(movie_title)
+        if movie_id is None:
+            return jsonify({
+                "recommendations": [],
+                "suggestions": suggestions,
+                "error": error
+            }), 400
+        recommendations = recommender.hybrid_recommend(user_id, movie_id, top_n=num_recommendations)
+        # Format recommendations for JSON
+        recs = [
+            {"title": row["title"], "match": float(row["match percentage"])}
+            for _, row in recommendations.iterrows()
+        ]
+        return jsonify({
+            "recommendations": recs,
+            "suggestions": [],
+            "error": None
+        })
     except Exception as e:
-        st.error(f"Error: {e}")
+        return jsonify({
+            "recommendations": [],
+            "suggestions": [],
+            "error": str(e)
+        }), 400
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
