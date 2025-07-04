@@ -29,3 +29,5 @@ data/credits.csv
 
 .env
 api.env
+
+node_modules
