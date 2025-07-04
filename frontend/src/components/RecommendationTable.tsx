@@ -24,38 +24,39 @@ const RecommendationTable: React.FC<RecommendationTableProps> = ({ recommendatio
   }));
 
   return (
-    <div className="  rounded-2xl px-10 pt-8 pb-8 mb-8 w-full max-w-2xl mx-auto ">
-      <div className="flex justify-between items-center mb-6">
-        <h3 className="text-2xl font-bold text-white">Recommendations</h3>
+    <div className="backdrop-blur-xl bg-white/5 border border-white/10 shadow-2xl rounded-3xl px-8 pt-8 pb-10 mb-16 w-full max-w-4xl mx-auto text-white transition-all duration-300">
+      <div className="flex justify-between items-center mb-6 px-2">
+        <h3 className="text-3xl font-bold text-white drop-shadow tracking-wide">
+          Your Recommendations
+        </h3>
         <CSVLink
           data={csvData}
           headers={headers}
           filename="recommendations.csv"
-          className="bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-6 rounded-lg shadow-md transition text-base"
+          className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-6 rounded-xl text-sm shadow-md transition duration-300"
         >
-          Download CSV
+          ⬇ Download CSV
         </CSVLink>
       </div>
+
       <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200 rounded-lg overflow-hidden text-center">
-          <thead className="bg-blue-50 ">
-            <tr>
-              <th className="px-6 py-3 font-bold text-blue-700  tracking-wider text-xl text-center">Title</th>
-              <th className="px-6 py-3 font-bold text-blue-700 tracking-wider text-xl text-center">Match %</th>
+        <table className="min-w-full text-left rounded-xl overflow-hidden text-white">
+          <thead>
+            <tr className="bg-white/10 border-b border-white/10">
+              <th className="px-6 py-4 text-lg font-semibold tracking-wider">Title</th>
+              <th className="px-6 py-4 text-lg font-semibold tracking-wider text-right">Match %</th>
             </tr>
           </thead>
-          <tbody className="bg-white divide-y divide-gray-100">
+          <tbody>
             {recommendations.map((rec, idx) => (
               <tr
                 key={idx}
-                className={
-                  idx % 2 === 0
-                    ? "bg-blue-50 hover:bg-blue-100 transition"
-                    : "bg-white hover:bg-blue-50 transition"
-                }
+                className={`transition duration-300 ${
+                  idx % 2 === 0 ? "bg-white/5" : "bg-white/10"
+                } hover:bg-red-900/30`}
               >
-                <td className="px-6 py-3 whitespace-nowrap text-lg text-gray-800">{rec.title}</td>
-                <td className="px-6 py-3 whitespace-nowrap text-lg text-blue-700 font-semibold">
+                <td className="px-6 py-4 text-base">{rec.title}</td>
+                <td className="px-6 py-4 text-base text-right font-semibold text-red-400">
                   {typeof rec.match === "number" ? `${rec.match.toFixed(1)}` : "N/A"}
                 </td>
               </tr>

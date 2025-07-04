@@ -14,7 +14,7 @@ interface FormData {
   num_recommendations: number;
 }
 
-const DEV_MODE = true; 
+const DEV_MODE = true;
 
 export default function App() {
   const [recommendations, setRecommendations] = useState<any[]>([]);
@@ -32,7 +32,7 @@ export default function App() {
 
     try {
       if (DEV_MODE) {
-        
+
         await new Promise((resolve) => setTimeout(resolve, 800));
 
         const demoRecommendations = [
@@ -71,16 +71,18 @@ export default function App() {
     <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-violet-950 to-black overflow-auto">
       < Navbar />
       <Hero />
-      <MovieInputForm onSubmit={handleSubmit} loading={loading} />
-      <ErrorMessage
-        error={error}
-        suggestions={suggestions}
-        onSuggestionClick={handleSuggestionClick}
-      />
-  
-      <RecommendationTable recommendations={recommendations} />
-      <Footer />
-    </div>
-    
-  );
+      
+        <MovieInputForm onSubmit={handleSubmit} loading={loading} />
+        <ErrorMessage
+          error={error}
+          suggestions={suggestions}
+          onSuggestionClick={handleSuggestionClick}
+        />
+
+        <RecommendationTable recommendations={recommendations} />
+        <Footer />
+        </div>
+      
+
+      );
 }

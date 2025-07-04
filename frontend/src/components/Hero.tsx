@@ -52,7 +52,7 @@ const Hero = () => {
                     </p>
                     <a
                         href="#recommend"
-                        className="bg-pink-600 text-white hover:bg-white hover:text-pink-600 px-8 py-3 rounded-lg text-lg font-semibold shadow-md transition"
+                        className="bg-red-600 text-white hover:bg-white hover:text-red-600 px-8 py-3 rounded-lg text-lg font-semibold shadow-md transition"
                     >
                         Get Recommendations
                     </a>
