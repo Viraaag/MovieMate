@@ -9,7 +9,15 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.recommender import HybridRecommender
 
 app = Flask(__name__)
-CORS(app, resources={r"/recommend": {"origins": ["http://localhost:5173", "http://localhost:3000", "http://localhost:5000"]}})
+CORS(app, resources={r"/recommend": {
+    "origins": [
+        "http://localhost:5173",
+        "http://localhost:5174",  # add this line
+        "http://localhost:3000",
+        "http://localhost:5000"
+    ]
+}})
+
 
 # Initialize recommender (cache in global scope)
 recommender = HybridRecommender(
