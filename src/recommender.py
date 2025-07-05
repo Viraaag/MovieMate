@@ -1,4 +1,3 @@
-import os
 import pandas as pd
 import ast
 from surprise import Dataset, Reader, SVD
@@ -8,11 +7,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 import difflib
 import datetime
 from groq import Groq
-from dotenv import load_dotenv
-import openai
-# Load Groq API key from .env file
-load_dotenv(dotenv_path="api.env")
-openai.api_key = os.getenv("GROQ_API_KEY")
 
 
 
@@ -127,47 +121,72 @@ class HybridRecommender:
         print("[INFO] Model training complete.")
 
     def get_movie_id_from_title(self, title):
-        """
-        Returns (movie_id, suggestions, error):
-        - If exact match: (movie_id, [], None)
-        - If close matches: (None, [suggestions], error_message)
-        - If not found: (None, [], error_message)
-        """
         if self.metadata is None:
-            return None, [], "Metadata not initialized."
+            raise ValueError("Metadata not initialized.")
 
         title = title.strip().lower()
+
         self.metadata = self.metadata[self.metadata["title"].apply(lambda x: isinstance(x, str))].copy()
         self.metadata['title_lower'] = self.metadata['title'].str.lower().str.strip()
 
         result = self.metadata[self.metadata['title_lower'] == title]
         if not result.empty:
-            return result['id'].values[0], [], None
+            return result['id'].values[0]
 
         all_titles = self.metadata["title_lower"].tolist()
         close_matches = difflib.get_close_matches(title, all_titles, n=3, cutoff=0.85)
 
         if close_matches:
-            suggestions = [self.metadata[self.metadata["title_lower"] == match]["title"].values[0] for match in close_matches]
-            return None, suggestions, f"Movie not found. Did you mean: {', '.join(suggestions)}?"
+            print("\n[INFO] Movie title not found.")
+            print("[INFO] Did you mean:")
+            for idx, match in enumerate(close_matches, 1):
+                original_title = self.metadata[self.metadata["title_lower"] == match]["title"].values[0]
+                print(f"{idx}. {original_title}")
+
+            choice = input("Enter the number of the correct movie (or 0 to fetch using AI): ").strip()
+            if choice.isdigit():
+                choice = int(choice)
+                if 1 <= choice <= len(close_matches):
+                    selected_title = close_matches[choice - 1]
+                    return self.metadata[self.metadata["title_lower"] == selected_title]["id"].values[0]
+                elif choice == 0:
+                    print("[INFO] Attempting to fetch movie data using AI fallback...")
+                    ai_id = self.fetch_and_add_movie_from_ai(title)
+                    if ai_id:
+                        return ai_id
+                    else:
+                        raise ValueError("[ERROR] AI could not fetch movie data.")
+            else:
+                raise ValueError("Invalid input.")
+
         else:
-            return None, [], f"Movie '{title}' not found in the dataset."
+            print(f"[INFO] '{title}' not found in the dataset.")
+            use_ai = input("Would you like to try fetching movie data from AI? (y/n): ").strip().lower()
+            if use_ai == "y":
+                return self.fetch_and_add_movie_from_ai(title)
+            else:
+                raise ValueError(f"No similar movie titles found for '{title}'.")
 
     def fetch_and_add_movie_from_ai(self, title):
         import os
         from openai import OpenAI
         from dotenv import load_dotenv
 
+    # Load Groq API key from api.env
         load_dotenv("api.env")
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
-            return None, "GROQ_API_KEY not found in api.env"
+            print("[ERROR] GROQ_API_KEY not found in api.env")
+            return None
+            
 
+    # Initialize Groq client
         client = OpenAI(
             api_key=api_key,
             base_url="https://api.groq.com/openai/v1"
         )
 
+        print(f"[INFO] Querying Groq for metadata of '{title}'...")
         prompt = f"""
         Imagine you're a movie database. Given the title '{title}', provide the following:
         - Overview
@@ -185,19 +204,30 @@ class HybridRecommender:
         try:
             response = client.chat.completions.create(
                 model="llama3-70b-8192",
-                messages=[{"role": "user", "content": prompt}]
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]              
             )
             import re
             import json5
+
             content = response.choices[0].message.content.strip()
+
+            # Extract the first JSON object from the text using regex
             json_match = re.search(r"\{[\s\S]*\}", content)
             if not json_match:
-                return None, "No valid JSON found in Groq response."
+                raise ValueError("No valid JSON found in Groq response.")
+
+                
             json_str = json_match.group(0)
+            print("[INFO] Extracted JSON:\n", json_str)
+
             try:
                 ai_movie = json5.loads(json_str)
+                # Normalize fields: convert list fields to space-separated strings
                 ai_movie["genres"] = " ".join(ai_movie["genres"]) if isinstance(ai_movie["genres"], list) else str(ai_movie["genres"])
                 ai_movie["keywords"] = " ".join(ai_movie["keywords"]) if isinstance(ai_movie["keywords"], list) else str(ai_movie["keywords"])
+
                 def normalize_people_field(field):
                     if isinstance(field, list):
                         names = []
@@ -208,12 +238,20 @@ class HybridRecommender:
                                 names.append(item)
                         return " ".join(names)
                     return str(field)
+
                 ai_movie["cast"] = normalize_people_field(ai_movie.get("cast", []))
                 ai_movie["crew"] = normalize_people_field(ai_movie.get("crew", []))
+
                 ai_movie["production_countries"] = " ".join(ai_movie["production_countries"]) if isinstance(ai_movie["production_countries"], list) else str(ai_movie["production_countries"])
+
             except Exception as e:
-                return None, f"Failed to parse JSON: {e}"
+                print("[ERROR] Failed to parse JSON:", e)
+                return None
+
             ai_movie["id"] = str(max(self.metadata["id"].astype(str).astype(int), default=100000) + 1)
+
+
+            # Construct soup and year
             ai_movie["soup"] = (
                 ai_movie["overview"] + " " +
                 ai_movie["genres"] + " " +
@@ -222,15 +260,24 @@ class HybridRecommender:
                 ai_movie["crew"]
             )
             ai_movie["year"] = pd.to_datetime(ai_movie["release_date"], errors="coerce").year
+
+            # Append to metadata
             self.metadata = pd.concat([self.metadata, pd.DataFrame([ai_movie])], ignore_index=True)
             self.metadata.to_csv("data/movies_metadata_updated.csv", index=False)
+
+            # Rebuild TF-IDF model to include the new movie
             from sklearn.feature_extraction.text import TfidfVectorizer
             tfidf = TfidfVectorizer(stop_words="english")
             self.tfidf_matrix = tfidf.fit_transform(self.metadata["soup"].fillna(""))
             self.movie_indices = pd.Series(self.metadata.index, index=self.metadata["id"])
-            return ai_movie["id"], None
+
+            print(f"[INFO] '{title}' added to the dataset and models updated.")
+            return ai_movie["id"]
+
         except Exception as e:
-            return None, f"Failed to fetch movie from Groq: {e}"
+            print("[ERROR] Failed to fetch movie from Groq:", e)
+            return None
+
 
     def content_recommend(self, movie_id, top_n=10):
         if movie_id not in self.movie_indices:
@@ -250,8 +297,7 @@ class HybridRecommender:
         return result
 
     def hybrid_recommend(self, user_id, movie_id, top_n=10, alpha=0.3, preferred_language=None, preferred_country=None):
-        content_recs = self.content_recommend(movie_id, top_n=50)  # get more raw candidates
-
+        content_recs = self.content_recommend(movie_id, top_n=top_n)
         if preferred_language:
             content_recs = content_recs[content_recs["original_language"] == preferred_language]
 
@@ -263,7 +309,7 @@ class HybridRecommender:
         user_rated_ids = user_rated_ids[user_rated_ids["userId"] == int(user_id)]["movieId"].astype(str).tolist()
         content_recs = content_recs[~content_recs["id"].isin(user_rated_ids)]
 
-        #content_recs = content_recs[content_recs["content_score"] > 0.2]
+        content_recs = content_recs[content_recs["content_score"] > 0.5]
         if content_recs.empty:
             raise ValueError("No sufficiently similar movies found to recommend.")
 
@@ -286,33 +332,18 @@ class HybridRecommender:
         content_recs["match percentage"] = content_recs["match percentage"].round(1)
 
         # Filter out very low match percentages (optional threshold, tweakable)
-        content_recs = content_recs[content_recs["match percentage"] > 1.0]
+        content_recs = content_recs[content_recs["match percentage"] > 5.0]
         if len(content_recs) < top_n:
             print(f"[INFO] Only {len(content_recs)} strong recommendations found (above 5% match).")
 
 
-        # Final fallback check
         if content_recs.empty:
-            print("Error: No sufficiently similar movies found to recommend.")
-            return pd.DataFrame()
-
-        print("[DEBUG] Last 5 IDs:", self.metadata["id"].tail())
-
-        input_row = self.metadata[self.metadata["id"].astype(str) == str(movie_id)]
-        if input_row.empty:
-            raise ValueError(f"[ERROR] Movie with ID {movie_id} not found in metadata after update.")
-        input_movie = input_row.iloc[0]
+            raise ValueError("No sufficiently similar movies found to recommend.")
 
 
-
-        print("[DEBUG] Checking movie ID:", movie_id)
-        print("[DEBUG] Available IDs:", self.metadata["id"].tolist()[:10])  # just the first 10 to avoid overflow
-        print("[DEBUG] Matching row:\n", self.metadata[self.metadata["id"] == movie_id])
-
-
+        input_movie = self.metadata[self.metadata["id"] == movie_id].iloc[0]
         input_director = input_movie["crew"]
         input_cast = input_movie["cast"].split()
-
 
         content_recs["same_director"] = content_recs["crew"].apply(lambda x: input_director in x)
         content_recs["shared_actor"] = content_recs["cast"].apply(lambda x: any(actor in x.split() for actor in input_cast))
@@ -336,10 +367,9 @@ class HybridRecommender:
         if "Shared Actor" in content_recs.columns:
             content_recs.drop(columns=["Shared Actor", "Same Director"], inplace=True, errors='ignore')
 
-        return content_recs.sort_values("match percentage", ascending=False).head(top_n)[
+        return content_recs.sort_values("match percentage", ascending=False)[
             ["title", "genres", "year", "match percentage", "Why Recommended"]
         ].reset_index(drop=True)
-
 
 
 
@@ -355,37 +385,36 @@ if __name__ == "__main__":
     user_id = input("Enter user ID (default is 1): ") or "1"
 
     try:
-        movie_id, suggestions, error = recommender.get_movie_id_from_title(movie_title)
-        if error:
-            print(error)
-        else:
-            print(f"[DEBUG] Matched movie ID: {movie_id}")
-            print(recommender.metadata[recommender.metadata["id"] == movie_id][["title", "genres", "cast", "crew", "soup"]])
+        movie_id = recommender.get_movie_id_from_title(movie_title)
 
-            recommendations = recommender.hybrid_recommend(int(user_id), movie_id, top_n=5)
+        # DEBUG: Show matched movie details
+        print(f"[DEBUG] Matched movie ID: {movie_id}")
+        print(recommender.metadata[recommender.metadata["id"] == movie_id][["title", "genres", "cast", "crew", "soup"]])
+
+        recommendations = recommender.hybrid_recommend(int(user_id), movie_id, top_n=5)
 
 
-            print("\nTop Recommendations:")
-            print(recommendations)
+        print("\nTop Recommendations:")
+        print(recommendations)
 
-            feedback = input("Mark any movies as NOT relevant (comma-separated numbers or 'none'): ")
-            if feedback.lower() != "none":
-                indices = [int(x.strip()) for x in feedback.split(",") if x.strip().isdigit()]
-                if indices:
-                    not_liked_titles = recommendations.iloc[indices]["title"].tolist()
-                    print("Thanks! You didn't like:", not_liked_titles)
+        feedback = input("Mark any movies as NOT relevant (comma-separated numbers or 'none'): ")
+        if feedback.lower() != "none":
+            indices = [int(x.strip()) for x in feedback.split(",") if x.strip().isdigit()]
+            if indices:
+                not_liked_titles = recommendations.iloc[indices]["title"].tolist()
+                print("Thanks! You didn't like:", not_liked_titles)
 
-                    # Log feedback to CSV
-                    feedback_df = pd.DataFrame({
-                        "timestamp": datetime.datetime.now().isoformat(),
-                        "user_id": [user_id] * len(not_liked_titles),
-                        "title": not_liked_titles
-                    })
-                    feedback_df.to_csv("feedback_log.csv", mode='a', index=False, header=not pd.io.common.file_exists("feedback_log.csv"))
+                # Log feedback to CSV
+                feedback_df = pd.DataFrame({
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "user_id": [user_id] * len(not_liked_titles),
+                    "title": not_liked_titles
+                })
+                feedback_df.to_csv("feedback_log.csv", mode='a', index=False, header=not pd.io.common.file_exists("feedback_log.csv"))
 
-            save = input("Do you want to save recommendations to a CSV? (y/n): ").strip().lower()
-            if save == "y":
-                recommendations.to_csv(f"recommendations_for_{movie_title.replace(' ', '_')}.csv", index=False)
-                print("Recommendations saved!")
+        save = input("Do you want to save recommendations to a CSV? (y/n): ").strip().lower()
+        if save == "y":
+            recommendations.to_csv(f"recommendations_for_{movie_title.replace(' ', '_')}.csv", index=False)
+            print("Recommendations saved!")
     except Exception as e:
         print(f"Error: {e}")
