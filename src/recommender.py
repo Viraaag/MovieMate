@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import ast
 from surprise import Dataset, Reader, SVD
@@ -12,6 +13,8 @@ from groq import Groq
 
 class HybridRecommender:
     def __init__(self, ratings_path, metadata_path, credits_path, keywords_path):
+        self.new_movies_buffer = []  # Buffer AI-fetched movies
+        self.ai_data_path = "data/movies_metadata_ai.csv"
         self.ratings_path = ratings_path
         self.metadata_path = metadata_path
         self.credits_path = credits_path
@@ -32,6 +35,13 @@ class HybridRecommender:
     def _prepare_models(self):
         print("[INFO] Loading and merging metadata, credits, and keywords...")
         metadata = pd.read_csv(self.metadata_path, low_memory=False)
+
+# Load persisted AI-fetched movies if exists
+        if os.path.exists(self.ai_data_path):
+            ai_movies = pd.read_csv(self.ai_data_path, low_memory=False)
+            print(f"[INFO] Loaded {len(ai_movies)} AI-fetched movies.")
+            metadata = pd.concat([metadata, ai_movies], ignore_index=True)
+
         credits = pd.read_csv(self.credits_path)
         keywords = pd.read_csv(self.keywords_path)
 
@@ -262,8 +272,20 @@ class HybridRecommender:
             ai_movie["year"] = pd.to_datetime(ai_movie["release_date"], errors="coerce").year
 
             # Append to metadata
+            # Append to metadata (in-memory only for now)
             self.metadata = pd.concat([self.metadata, pd.DataFrame([ai_movie])], ignore_index=True)
-            self.metadata.to_csv("data/movies_metadata_updated.csv", index=False)
+            self.new_movies_buffer.append(ai_movie)
+
+            # Persist AI-fetched movie to disk
+            if os.path.exists(self.ai_data_path):
+                ai_df = pd.read_csv(self.ai_data_path)
+                ai_df = pd.concat([ai_df, pd.DataFrame([ai_movie])], ignore_index=True)
+            else:
+                ai_df = pd.DataFrame([ai_movie])
+            ai_df.to_csv(self.ai_data_path, index=False)
+
+            print(f"[INFO] '{title}' added to dataset and saved for future use.")
+
 
             # Rebuild TF-IDF model to include the new movie
             from sklearn.feature_extraction.text import TfidfVectorizer
@@ -278,6 +300,12 @@ class HybridRecommender:
         except Exception as e:
             print("[ERROR] Failed to fetch movie from Groq:", e)
             return None
+    def refresh_tfidf_model(self):
+        """Rebuild TF-IDF model after batch of AI movies."""
+        print("[INFO] Refreshing TF-IDF model with new movies...")
+        tfidf = TfidfVectorizer(stop_words="english")
+        self.tfidf_matrix = tfidf.fit_transform(self.metadata["soup"].fillna(""))
+        self.movie_indices = pd.Series(self.metadata.index, index=self.metadata["id"])
 
 
     def content_recommend(self, movie_id, top_n=10):
@@ -384,6 +412,10 @@ if __name__ == "__main__":
 
     try:
         movie_id = recommender.get_movie_id_from_title(movie_title)
+        # Refresh TF-IDF if new AI movies were added
+        if recommender.new_movies_buffer:
+            recommender.refresh_tfidf_model()
+
 
         # DEBUG: Show matched movie details
         print(f"[DEBUG] Matched movie ID: {movie_id}")
