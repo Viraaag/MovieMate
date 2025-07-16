@@ -22,7 +22,7 @@ const Navbar = () => {
 
 
                 <a
-                    href="https://github.com/SaurabhShisode"
+                    href="https://github.com/Viraaag"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-gray-300 hover:text-white flex items-center gap-2"

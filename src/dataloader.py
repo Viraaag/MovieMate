@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+import ast
 
 # Step 1: Get base project path (i.e., Movie Recommender Systems)
 current_dir = os.path.dirname(os.path.abspath(__file__))     # .../src
