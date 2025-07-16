@@ -151,7 +151,7 @@ class HybridRecommender:
                     return self.metadata[self.metadata["title_lower"] == selected_title]["id"].values[0]
                 elif choice == 0:
                     print("[INFO] Attempting to fetch movie data using AI fallback...")
-                    ai_id = self.fetch_and_add_movie_from_ai(title)
+                    ai_id = self.fetch_and_add_movie_from_ai(title.title())
                     if ai_id:
                         return ai_id
                     else:
@@ -163,7 +163,7 @@ class HybridRecommender:
             print(f"[INFO] '{title}' not found in the dataset.")
             use_ai = input("Would you like to try fetching movie data from AI? (y/n): ").strip().lower()
             if use_ai == "y":
-                return self.fetch_and_add_movie_from_ai(title)
+                return self.fetch_and_add_movie_from_ai(title.title())
             else:
                 raise ValueError(f"No similar movie titles found for '{title}'.")
 
@@ -272,8 +272,9 @@ class HybridRecommender:
             self.movie_indices = pd.Series(self.metadata.index, index=self.metadata["id"])
 
             print(f"[INFO] '{title}' added to the dataset and models updated.")
+            print(f"[DEBUG] New movie ID: {ai_movie['id']}")
+            print(f"[DEBUG] New movie index in TF-IDF: {self.movie_indices[ai_movie['id']]}")
             return ai_movie["id"]
-
         except Exception as e:
             print("[ERROR] Failed to fetch movie from Groq:", e)
             return None
@@ -309,7 +310,7 @@ class HybridRecommender:
         user_rated_ids = user_rated_ids[user_rated_ids["userId"] == int(user_id)]["movieId"].astype(str).tolist()
         content_recs = content_recs[~content_recs["id"].isin(user_rated_ids)]
 
-        content_recs = content_recs[content_recs["content_score"] > 0.5]
+        content_recs = content_recs[content_recs["content_score"] > 0.1]
         if content_recs.empty:
             raise ValueError("No sufficiently similar movies found to recommend.")
 
@@ -363,13 +364,10 @@ class HybridRecommender:
 
         content_recs["Why Recommended"] = content_recs.apply(explain, axis=1)
 
-        # Remove 'Shared Actor' and 'Same Director' before returning
-        if "Shared Actor" in content_recs.columns:
-            content_recs.drop(columns=["Shared Actor", "Same Director"], inplace=True, errors='ignore')
+        # Return only selected columns (no need to drop explicitly)
+        final_cols = ["title", "genres", "year", "match percentage", "Why Recommended"]
+        return content_recs.sort_values("match percentage", ascending=False)[final_cols].reset_index(drop=True)
 
-        return content_recs.sort_values("match percentage", ascending=False)[
-            ["title", "genres", "year", "match percentage", "Why Recommended"]
-        ].reset_index(drop=True)
 
 
 
