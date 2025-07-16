@@ -1,6 +1,8 @@
 import os
 import pandas as pd
 import ast
+import joblib
+import requests
 from surprise import Dataset, Reader, SVD
 from surprise.model_selection import train_test_split
 from sklearn.metrics.pairwise import cosine_similarity
@@ -9,12 +11,19 @@ import difflib
 import datetime
 from groq import Groq
 
+from dotenv import load_dotenv
+load_dotenv(dotenv_path="omdbapi.env")
+
 
 
 class HybridRecommender:
     def __init__(self, ratings_path, metadata_path, credits_path, keywords_path):
-        self.new_movies_buffer = []  # Buffer AI-fetched movies
+        self.new_movies_buffer = []
         self.ai_data_path = "data/movies_metadata_ai.csv"
+        self.tfidf_path = "cache/tfidf_vectorizer.pkl"
+        self.tfidf_matrix_path = "cache/tfidf_matrix.pkl"
+        self.cf_model_path = "cache/cf_model.pkl"
+
         self.ratings_path = ratings_path
         self.metadata_path = metadata_path
         self.credits_path = credits_path
@@ -36,7 +45,6 @@ class HybridRecommender:
         print("[INFO] Loading and merging metadata, credits, and keywords...")
         metadata = pd.read_csv(self.metadata_path, low_memory=False)
 
-# Load persisted AI-fetched movies if exists
         if os.path.exists(self.ai_data_path):
             ai_movies = pd.read_csv(self.ai_data_path, low_memory=False)
             print(f"[INFO] Loaded {len(ai_movies)} AI-fetched movies.")
@@ -50,29 +58,21 @@ class HybridRecommender:
         keywords['id'] = keywords['id'].astype(str)
 
         metadata = metadata[["id", "title", "overview", "genres", "release_date", "original_language", "production_countries"]]
-
-        metadata = metadata.merge(credits, on='id')
-        metadata = metadata.merge(keywords, on='id')
-
+        metadata = metadata.merge(credits, on='id').merge(keywords, on='id')
         metadata = metadata.dropna(subset=["cast", "crew", "genres", "keywords"])
 
         def parse_features(text, key=None):
             try:
-                if not isinstance(text, str):
-                    return ""
+                if not isinstance(text, str): return ""
                 items = ast.literal_eval(text)
                 if isinstance(items, list):
-                    if key:
-                        return " ".join([d.get(key, "") for d in items if isinstance(d, dict)])
-                    return " ".join([str(d) for d in items])
-                return ""
-            except:
-                return ""
+                    return " ".join([d.get(key, "") if key else str(d) for d in items if isinstance(d, dict)])
+            except: return ""
+            return ""
 
         def safe_parse_names(text, role=None, limit=None):
             try:
-                if not isinstance(text, str):
-                    return ""
+                if not isinstance(text, str): return ""
                 items = ast.literal_eval(text)
                 if isinstance(items, list):
                     if role:
@@ -80,12 +80,10 @@ class HybridRecommender:
                     if limit:
                         return " ".join([i["name"] for i in items[:limit] if isinstance(i, dict)])
                     return " ".join([i["name"] for i in items if isinstance(i, dict)])
-                return ""
-            except:
-                return ""
+            except: return ""
+            return ""
 
         print("[INFO] Parsing metadata fields and generating soup...")
-
         metadata["genres"] = metadata["genres"].apply(lambda x: parse_features(x, "name"))
         metadata["keywords"] = metadata["keywords"].apply(lambda x: parse_features(x, "name"))
         metadata["cast"] = metadata["cast"].apply(lambda x: safe_parse_names(x, limit=3))
@@ -95,18 +93,13 @@ class HybridRecommender:
             metadata[field] = metadata[field].fillna("").astype(str)
 
         metadata["soup"] = (
-            metadata["overview"] + " " +
-            metadata["genres"] + " " +
-            metadata["keywords"] + " " +
-            metadata["cast"] + " " +
-            metadata["crew"]
+            metadata["overview"] + " " + metadata["genres"] + " " +
+            metadata["keywords"] + " " + metadata["cast"] + " " + metadata["crew"]
         )
 
         metadata["year"] = pd.to_datetime(metadata["release_date"], errors="coerce").dt.year.astype("Int64")
         metadata["original_language"] = metadata["original_language"].astype(str)
         metadata["production_countries"] = metadata["production_countries"].apply(lambda x: parse_features(x, "name"))
-
-
 
         if metadata["soup"].apply(lambda x: isinstance(x, float)).any():
             print("[ERROR] Float found in soup column:")
@@ -116,19 +109,68 @@ class HybridRecommender:
         self.metadata = metadata.reset_index(drop=True)
 
         print("[INFO] Building content-based TF-IDF model...")
-        tfidf = TfidfVectorizer(stop_words="english")
-        self.tfidf_matrix = tfidf.fit_transform(self.metadata["soup"])
+        os.makedirs(os.path.dirname(self.tfidf_path), exist_ok=True)
+        if os.path.exists(self.tfidf_path) and os.path.exists(self.tfidf_matrix_path):
+            self.tfidf_vectorizer = joblib.load(self.tfidf_path)
+            self.tfidf_matrix = joblib.load(self.tfidf_matrix_path)
+        else:
+            self.tfidf_vectorizer = TfidfVectorizer(stop_words="english")
+            self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(self.metadata["soup"])
+            joblib.dump(self.tfidf_vectorizer, self.tfidf_path)
+            joblib.dump(self.tfidf_matrix, self.tfidf_matrix_path)
 
         self.movie_indices = pd.Series(self.metadata.index, index=self.metadata["id"])
 
         print("[INFO] Training collaborative filtering model...")
-        reader = Reader(line_format='user item rating timestamp', sep=",", skip_lines=1)
-        data = Dataset.load_from_file(self.ratings_path, reader=reader)
-        trainset, _ = train_test_split(data, test_size=0.2)
-        self.cf_model = SVD()
-        self.cf_model.fit(trainset)
+        os.makedirs(os.path.dirname(self.cf_model_path), exist_ok=True)
+        if os.path.exists(self.cf_model_path):
+            self.cf_model = joblib.load(self.cf_model_path)
+        else:
+            reader = Reader(line_format='user item rating timestamp', sep=",", skip_lines=1)
+            data = Dataset.load_from_file(self.ratings_path, reader=reader)
+            trainset, _ = train_test_split(data, test_size=0.2)
+            self.cf_model = SVD()
+            self.cf_model.fit(trainset)
+            joblib.dump(self.cf_model, self.cf_model_path)
 
         print("[INFO] Model training complete.")
+
+    def refresh_tfidf_model(self):
+        print("[INFO] Refreshing TF-IDF model with new movies...")
+        self.tfidf_vectorizer = TfidfVectorizer(stop_words="english")
+        self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(self.metadata["soup"].fillna(""))
+        self.movie_indices = pd.Series(self.metadata.index, index=self.metadata["id"])
+        joblib.dump(self.tfidf_vectorizer, self.tfidf_path)
+        joblib.dump(self.tfidf_matrix, self.tfidf_matrix_path)
+
+    def validate_ai_response(self, ai_movie):
+        required_keys = ["title", "overview", "genres", "release_date"]
+        for key in required_keys:
+            if key not in ai_movie or not ai_movie[key]:
+                raise ValueError(f"[ERROR] AI response missing: {key}")
+
+    def postprocess_recommendations(self, content_recs):
+        if "vote_average" in self.metadata.columns:
+            content_recs["hybrid_score"] += 0.05 * self.metadata.loc[content_recs.index, "vote_average"].fillna(0)
+
+    def fetch_omdb_info(self, title, year=None):
+        api_key = os.getenv("OMDB_API_KEY")
+        query = f"http://www.omdbapi.com/?t={title}&apikey={api_key}"
+        if year:
+            query += f"&y={year}"
+        try:
+            response = requests.get(query)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("Response") == "True":
+                    poster = data.get("Poster")
+                    imdb_id = data.get("imdbID")
+                    imdb_link = f"https://www.imdb.com/title/{imdb_id}/" if imdb_id else None
+                    return poster, imdb_link
+        except Exception as e:
+            print(f"[WARN] OMDb fetch failed for '{title}': {e}")
+        return None, None
+
 
     def get_movie_id_from_title(self, title):
         if self.metadata is None:
@@ -334,10 +376,6 @@ class HybridRecommender:
             content_recs = content_recs[content_recs["production_countries"].str.contains(preferred_country, na=False)]
 
 
-        user_rated_ids = pd.read_csv(self.ratings_path)
-        user_rated_ids = user_rated_ids[user_rated_ids["userId"] == int(user_id)]["movieId"].astype(str).tolist()
-        content_recs = content_recs[~content_recs["id"].isin(user_rated_ids)]
-
         content_recs = content_recs[content_recs["content_score"] > 0.1]
         if content_recs.empty:
             raise ValueError("No sufficiently similar movies found to recommend.")
@@ -391,9 +429,18 @@ class HybridRecommender:
             return ", ".join(reasons)
 
         content_recs["Why Recommended"] = content_recs.apply(explain, axis=1)
+        
+        # Fetch posters and IMDb links using OMDb API
+        content_recs["Poster"] = None
+        content_recs["IMDb Link"] = None
+
+        for idx, row in content_recs.iterrows():
+            poster, imdb = self.fetch_omdb_info(row["title"], row["year"])
+            content_recs.at[idx, "Poster"] = poster
+            content_recs.at[idx, "IMDb Link"] = imdb
 
         # Return only selected columns (no need to drop explicitly)
-        final_cols = ["title", "genres", "year", "match percentage", "Why Recommended"]
+        final_cols = ["title", "genres", "year", "match percentage", "Why Recommended", "Poster", "IMDb Link"]
         return content_recs.sort_values("match percentage", ascending=False)[final_cols].reset_index(drop=True)
 
 
@@ -408,7 +455,8 @@ if __name__ == "__main__":
     )
 
     movie_title = input("Enter a movie title: ").strip().lower()
-    user_id = input("Enter user ID (default is 1): ") or "1"
+    user_id = "1"
+
 
     try:
         movie_id = recommender.get_movie_id_from_title(movie_title)
@@ -425,22 +473,16 @@ if __name__ == "__main__":
 
 
         print("\nTop Recommendations:")
-        print(recommendations)
+        for i, row in recommendations.iterrows():
+            print(f"{i+1}. 🎬 {row['title']} ({row['year']}) - {row['match percentage']}% match")
+            print(f"    Why: {row['Why Recommended']}")
+            if row['IMDb Link']:
+                print(f"    IMDb: {row['IMDb Link']}")
+            if row['Poster']:
+                print(f"    Poster: {row['Poster']}")
 
-        feedback = input("Mark any movies as NOT relevant (comma-separated numbers or 'none'): ")
-        if feedback.lower() != "none":
-            indices = [int(x.strip()) for x in feedback.split(",") if x.strip().isdigit()]
-            if indices:
-                not_liked_titles = recommendations.iloc[indices]["title"].tolist()
-                print("Thanks! You didn't like:", not_liked_titles)
 
-                # Log feedback to CSV
-                feedback_df = pd.DataFrame({
-                    "timestamp": datetime.datetime.now().isoformat(),
-                    "user_id": [user_id] * len(not_liked_titles),
-                    "title": not_liked_titles
-                })
-                feedback_df.to_csv("feedback_log.csv", mode='a', index=False, header=not pd.io.common.file_exists("feedback_log.csv"))
+
 
         save = input("Do you want to save recommendations to a CSV? (y/n): ").strip().lower()
         if save == "y":
