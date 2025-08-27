@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: moviemate
+    env: python
+    plan: free
+    region: oregon
+    pythonVersion: 3.11.9
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn src.api_server:app --host 0.0.0.0 --port 10000
