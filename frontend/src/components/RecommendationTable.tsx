@@ -1,88 +1,72 @@
-import React from "react";
-import { CSVLink } from "react-csv";
+import React from 'react';
 
-type Recommendation = {
+interface Recommendation {
   title: string;
-  genres: string;
-  year?: number;
-  match_percentage: number;
-  why_recommended: string;
-};
+  genres: string[];
+  release_year: number;
+  vote_average: number;
+  poster_url?: string;
+  imdb_url?: string;
+  why_recommended?: string;
+}
 
-type RecommendationTableProps = {
+interface RecommendationTableProps {
   recommendations: Recommendation[];
-};
+}
 
 const RecommendationTable: React.FC<RecommendationTableProps> = ({ recommendations }) => {
-  if (!recommendations || recommendations.length === 0) return null;
-
-  const headers = [
-    { label: "Title", key: "title" },
-    { label: "Genres", key: "genres" },
-    { label: "Year", key: "year" },
-    { label: "Match %", key: "match_percentage" },
-    { label: "Why Recommended", key: "why_recommended" },
-  ];
-
-  const csvData = recommendations.map((rec) => ({
-    title: rec.title,
-    genres: rec.genres,
-    year: rec.year || "N/A",
-    match_percentage: rec.match_percentage,
-    why_recommended: rec.why_recommended,
-  }));
-
   return (
-    <div className="backdrop-blur-xl bg-white/5 border border-white/10 shadow-2xl rounded-3xl px-8 pt-8 pb-10 mb-16 w-full max-w-6xl mx-auto text-white transition-all duration-300">
-      <div className="flex justify-between items-center mb-6 px-2">
-        <h3 className="text-3xl font-bold text-white drop-shadow tracking-wide">
-          Your Recommendations
-        </h3>
-        <CSVLink
-          data={csvData}
-          headers={headers}
-          filename="recommendations.csv"
-          className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-6 rounded-xl text-sm shadow-md transition duration-300"
-        >
-          ⬇ Download CSV
-        </CSVLink>
-      </div>
-
-      <div className="overflow-x-auto">
-        <table className="min-w-full text-left rounded-xl overflow-hidden text-white">
-          <thead>
-            <tr className="bg-white/10 border-b border-white/10">
-              <th className="px-6 py-4 text-lg font-semibold tracking-wider">Title</th>
-              <th className="px-6 py-4 text-lg font-semibold tracking-wider">Genres</th>
-              <th className="px-6 py-4 text-lg font-semibold tracking-wider">Year</th>
-              <th className="px-6 py-4 text-lg font-semibold tracking-wider text-right">Match %</th>
-              <th className="px-6 py-4 text-lg font-semibold tracking-wider">Why Recommended</th>
+    <div className="overflow-x-auto mt-6">
+      <h2 className="text-2xl font-bold mb-4">Recommended Movies</h2>
+      <table className="min-w-full table-auto border border-gray-300">
+        <thead className="bg-gray-100">
+          <tr>
+            <th className="px-4 py-2">Poster</th>
+            <th className="px-4 py-2">Title</th>
+            <th className="px-4 py-2">Genres</th>
+            <th className="px-4 py-2">Year</th>
+            <th className="px-4 py-2">Rating</th>
+            <th className="px-4 py-2">Why Recommended</th>
+          </tr>
+        </thead>
+        <tbody>
+          {recommendations.map((movie, index) => (
+            <tr key={index} className="text-center border-t border-gray-200">
+              <td className="px-4 py-2">
+                {movie.poster_url ? (
+                  <img
+                    src={movie.poster_url}
+                    alt={movie.title}
+                    className="w-20 h-auto rounded"
+                  />
+                ) : (
+                  'N/A'
+                )}
+              </td>
+              <td className="px-4 py-2">
+                {movie.imdb_url ? (
+                  <a
+                    href={movie.imdb_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 hover:underline"
+                  >
+                    {movie.title}
+                  </a>
+                ) : (
+                  movie.title
+                )}
+              </td>
+              <td className="px-4 py-2">
+                {(movie.genres?.length && Array.isArray(movie.genres)) ? movie.genres.join(', ') : 'N/A'}
+              </td>
+              <td className="px-4 py-2">{movie.release_year}</td>
+              <td className="px-4 py-2">{movie.vote_average}</td>
+              <td className="px-4 py-2 whitespace-pre-wrap text-sm">{movie.why_recommended || '—'}</td>
             </tr>
-          </thead>
-          <tbody>
-            {recommendations.map((rec, idx) => (
-              <tr
-                key={idx}
-                className={`transition duration-300 ${
-                  idx % 2 === 0 ? "bg-white/5" : "bg-white/10"
-                } hover:bg-red-900/30`}
-              >
-                <td className="px-6 py-4 text-base font-medium">{rec.title}</td>
-                <td className="px-6 py-4 text-sm text-gray-300">{rec.genres}</td>
-                <td className="px-6 py-4 text-sm text-gray-300">
-                  {rec.year || "N/A"}
-                </td>
-                <td className="px-6 py-4 text-base text-right font-semibold text-red-400">
-                  {typeof rec.match_percentage === "number" ? `${rec.match_percentage.toFixed(1)}` : "N/A"}
-                </td>
-                <td className="px-6 py-4 text-sm text-gray-300 max-w-xs">
-                  {rec.why_recommended}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 };
