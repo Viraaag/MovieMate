@@ -36,10 +36,23 @@ class HybridRecommender:
 
         self._prepare_models()
 
+    def _is_nonempty_str(self, x):
+        """Return True only if x is a non-empty Python string (not NA)."""
+        return isinstance(x, str) and x.strip() != ""
+
     def title_overlap_boost(self, base_title, target_title):
-        base_words = set(base_title.lower().split())
-        target_words = set(target_title.lower().split())
+        base_title = base_title.lower()
+        target_title = target_title.lower()
+
+    # Exact franchise name check
+        if base_title.split()[0] == target_title.split()[0]:
+            return 1.0 if base_title.split()[0] in ["housefull", "iron", "avengers"] else 0.7
+
+        # Partial token match fallback
+        base_words = set(base_title.split())
+        target_words = set(target_title.split())
         return len(base_words & target_words) / len(base_words)
+
 
     def _prepare_models(self):
         print("[INFO] Loading and merging metadata, credits, and keywords...")
@@ -154,14 +167,30 @@ class HybridRecommender:
             content_recs["hybrid_score"] += 0.05 * self.metadata.loc[content_recs.index, "vote_average"].fillna(0)
 
     def fetch_omdb_info(self, title, year=None):
+        import os
+        from dotenv import load_dotenv
+        load_dotenv("api.env")  
         api_key = os.getenv("OMDB_API_KEY")
-        query = f"http://www.omdbapi.com/?t={title}&apikey={api_key}"
-        if year:
-            query += f"&y={year}"
+        if not api_key:
+            # If the user didn't set an OMDB key, skip silently.
+            return None, None
+        
+        base_url = "http://www.omdbapi.com/"
+        params = {"t": title, "apikey": api_key}
+        
+        # Safe year handling: only add 'y' if year exists and is not pd.NA
+        if year is not None and pd.notna(year):
+            try:
+                # cast to int to avoid sending pandas integer/NA types directly
+                params["y"] = int(year)
+            except Exception:
+                # If casting fails, skip attaching year (still search by title)
+                pass
+        
         try:
-            response = requests.get(query)
-            if response.status_code == 200:
-                data = response.json()
+            resp = requests.get(base_url, params=params, timeout=8)
+            if resp.status_code == 200:
+                data = resp.json()
                 if data.get("Response") == "True":
                     poster = data.get("Poster")
                     imdb_id = data.get("imdbID")
@@ -169,7 +198,9 @@ class HybridRecommender:
                     return poster, imdb_link
         except Exception as e:
             print(f"[WARN] OMDb fetch failed for '{title}': {e}")
-        return None, None
+        
+        return None, None    
+
 
 
     def get_movie_id_from_title(self, title):
@@ -184,6 +215,7 @@ class HybridRecommender:
         result = self.metadata[self.metadata['title_lower'] == title]
         if not result.empty:
             return result['id'].values[0]
+
 
         all_titles = self.metadata["title_lower"].tolist()
         close_matches = difflib.get_close_matches(title, all_titles, n=3, cutoff=0.85)
@@ -201,6 +233,7 @@ class HybridRecommender:
                 if 1 <= choice <= len(close_matches):
                     selected_title = close_matches[choice - 1]
                     return self.metadata[self.metadata["title_lower"] == selected_title]["id"].values[0]
+
                 elif choice == 0:
                     print("[INFO] Attempting to fetch movie data using AI fallback...")
                     ai_id = self.fetch_and_add_movie_from_ai(title.title())
@@ -216,6 +249,7 @@ class HybridRecommender:
             use_ai = input("Would you like to try fetching movie data from AI? (y/n): ").strip().lower()
             if use_ai == "y":
                 return self.fetch_and_add_movie_from_ai(title.title())
+
             else:
                 raise ValueError(f"No similar movie titles found for '{title}'.")
 
@@ -255,7 +289,7 @@ class HybridRecommender:
 
         try:
             response = client.chat.completions.create(
-                model="llama3-70b-8192",
+                model="llama-3.3-70b-versatile",
                 messages=[
                     {"role": "user", "content": prompt}
                 ]              
@@ -363,87 +397,229 @@ class HybridRecommender:
         movie_indices = [i[0] for i in sim_scores]
         scores = [i[1] for i in sim_scores]
 
-        result = self.metadata.iloc[movie_indices][["id", "title", "genres", "cast", "crew", "year"]].copy()
+        result = self.metadata.iloc[movie_indices][["id", "title", "genres", "cast", "crew", "year","original_language", "production_countries"]].copy()
         result["content_score"] = scores
         return result
 
-    def hybrid_recommend(self, user_id, movie_id, top_n=10, alpha=0.3, preferred_language=None, preferred_country=None):
-        content_recs = self.content_recommend(movie_id, top_n=top_n)
+    def hybrid_recommend(
+        self, user_id, movie_id, top_n=10, alpha=0.3,
+        preferred_language=None, preferred_country=None
+    ):
+        import re
+        # fetch more candidates so we can filter/boost effectively
+        initial_candidates = 50
+        content_recs = self.content_recommend(movie_id, top_n=initial_candidates)
+
+        if content_recs is None or content_recs.empty:
+            raise ValueError("No candidate movies available from content_recommend.")
+
+        # ensure these columns exist to avoid KeyErrors later
+        if "original_language" not in content_recs.columns:
+            content_recs["original_language"] = ""
+        if "production_countries" not in content_recs.columns:
+            content_recs["production_countries"] = ""
+
+        # optional user filters
         if preferred_language:
             content_recs = content_recs[content_recs["original_language"] == preferred_language]
 
         if preferred_country:
-            content_recs = content_recs[content_recs["production_countries"].str.contains(preferred_country, na=False)]
+            content_recs = content_recs[content_recs["production_countries"].astype(str).str.contains(preferred_country, na=False)]
 
-
-        content_recs = content_recs[content_recs["content_score"] > 0.1]
+        # drop candidates with almost-zero content similarity
+        content_recs = content_recs[content_recs["content_score"] > 0.05]
         if content_recs.empty:
             raise ValueError("No sufficiently similar movies found to recommend.")
 
-        content_recs["cf_score"] = content_recs["id"].apply(lambda x: self.cf_model.predict(str(user_id), str(x)).est)
+        # Collaborative Filtering scores (safe predict)
+        def safe_predict(iid):
+            try:
+                return self.cf_model.predict(str(user_id), str(iid)).est
+            except Exception:
+                return 0.0
+
+        content_recs["cf_score"] = content_recs["id"].apply(safe_predict)
+
+        # base hybrid
         content_recs["hybrid_score"] = alpha * content_recs["cf_score"] + (1 - alpha) * content_recs["content_score"]
 
-        input_genres = set(self.metadata[self.metadata["id"] == movie_id]["genres"].values[0].split())
-        genre_overlap = lambda genres: len(input_genres & set(genres.split())) / len(input_genres) if input_genres else 0
+        # --- Genre boost ---
+        try:
+            seed_genres_text = self.metadata[self.metadata["id"] == movie_id]["genres"].values[0]
+            input_genres = set(str(seed_genres_text).split()) if self._is_nonempty_str(seed_genres_text) else set()
+        except Exception:
+            input_genres = set()
+
+        def genre_overlap(genres):
+            try:
+                gset = set(str(genres).split())
+                return len(input_genres & gset) / (len(input_genres) if input_genres else 1)
+            except Exception:
+                return 0.0
+
         content_recs["genre_boost"] = content_recs["genres"].apply(genre_overlap)
-        content_recs["hybrid_score"] += 0.15 * content_recs["genre_boost"]
+        content_recs["hybrid_score"] += 0.3 * content_recs["genre_boost"]
 
-        content_recs["title_boost"] = content_recs["title"].apply(lambda x: self.title_overlap_boost(self.metadata[self.metadata["id"] == movie_id]["title"].values[0], x))
-        content_recs["hybrid_score"] += 0.2 * content_recs["title_boost"]
+        # --- Title boost (token overlap / franchise hint) ---
+        seed_title = str(self.metadata[self.metadata["id"] == movie_id]["title"].values[0])
+        content_recs["title_boost"] = content_recs["title"].apply(lambda x: self.title_overlap_boost(seed_title, x))
+        content_recs["hybrid_score"] += 0.4 * content_recs["title_boost"]
 
+        # --- Director boost ---
+        input_movie = self.metadata[self.metadata["id"] == movie_id].iloc[0]
+        input_director = input_movie.get("crew", "")
+        content_recs["Same Director"] = content_recs["crew"].apply(
+            lambda x: self._is_nonempty_str(x) and self._is_nonempty_str(input_director) and (input_director in x)
+        )
+        content_recs.loc[content_recs["Same Director"], "hybrid_score"] *= 1.5
+
+        # --- Shared actor (robust-ish) ---
+        def build_name_list(cast_str):
+            # try comma split first, else pair words (heuristic)
+            if not self._is_nonempty_str(cast_str):
+                return []
+            s = cast_str.strip()
+            if "," in s:
+                return [n.strip().lower() for n in s.split(",") if n.strip()]
+            parts = s.split()
+            names = []
+            i = 0
+            while i < len(parts):
+                if i + 1 < len(parts):
+                    names.append((parts[i] + " " + parts[i + 1]).lower())
+                    i += 2
+                else:
+                    names.append(parts[i].lower())
+                    i += 1
+            return names
+
+        seed_names = build_name_list(input_movie.get("cast", ""))
+
+        def has_shared_actor(candidate_cast):
+            if not self._is_nonempty_str(candidate_cast):
+                return False
+            low = candidate_cast.lower()
+            cand_names = build_name_list(candidate_cast)
+            # check for any seed full-name presence in candidate cast string
+            for sn in seed_names:
+                if sn in low or sn in cand_names:
+                    return True
+            return False
+
+        content_recs["Shared Actor"] = content_recs["cast"].apply(has_shared_actor)
+        content_recs.loc[content_recs["Shared Actor"], "hybrid_score"] *= 1.2
+
+        # --- Language & Country boosts (if present) ---
+        if self._is_nonempty_str(input_movie.get("original_language", "")) and "original_language" in content_recs.columns:
+            lang = input_movie.get("original_language")
+            content_recs.loc[content_recs["original_language"] == lang, "hybrid_score"] *= 1.2
+
+        seed_countries = str(input_movie.get("production_countries", ""))
+        if seed_countries:
+            mask = content_recs["production_countries"].astype(str).str.contains(seed_countries, na=False)
+            content_recs.loc[mask, "hybrid_score"] *= 1.2
+
+        # --- Strong Franchise/Series detection and boost (robust) ---
+        stop_words = {"the", "a", "an", "part", "chapter", "volume", "vol", "pt", "pt.", "movie", "episode", "and", "of"}
+        def normalize_title_tokens(t):
+            if not isinstance(t, str):
+                return []
+            s = t.lower()
+            s = re.sub(r'\(.*?\)', '', s)                 # remove parentheses
+            s = re.split(r'[:\-–—]', s)[0]                 # take part before colon/dash
+            s = re.sub(r'[^a-z0-9\s]', ' ', s)            # remove punctuation
+            tokens = [tok for tok in s.split() if tok and tok not in stop_words]
+            return tokens
+
+        def remove_trailing_ordinal(tokens):
+            roman = re.compile(r'^(i|ii|iii|iv|v|vi|vii|viii|ix|x)$')
+            return [tok for tok in tokens if not tok.isdigit() and not roman.match(tok)]
+
+        seed_tokens = remove_trailing_ordinal(normalize_title_tokens(seed_title))
+        seed_root = " ".join(seed_tokens[:2]) if seed_tokens else ""
+
+        def compute_franchise_score(candidate_title):
+            cand_tokens = remove_trailing_ordinal(normalize_title_tokens(candidate_title))
+            if not cand_tokens or not seed_tokens:
+                return 0.0
+            cand_join = " ".join(cand_tokens)
+            # strong root match
+            if seed_root and (seed_root in cand_join or " ".join(cand_tokens[:2]) in " ".join(seed_tokens)):
+                return 1.0
+            # token Jaccard
+            set_seed, set_cand = set(seed_tokens), set(cand_tokens)
+            jaccard = len(set_seed & set_cand) / max(len(set_seed | set_cand), 1)
+            if jaccard >= 0.5:
+                return jaccard
+            # fallback: longest matching substring ratio
+            s = difflib.SequenceMatcher(None, seed_title.lower(), candidate_title.lower())
+            lcs = max((block.size for block in s.get_matching_blocks()), default=0)
+            ratio = lcs / max(len(seed_title), len(candidate_title), 1)
+            if ratio >= 0.35:
+                return ratio
+            return 0.0
+
+        content_recs["franchise_score"] = content_recs["title"].astype(str).apply(compute_franchise_score)
+
+        # Strongly promote exact franchise matches
+        if not content_recs["hybrid_score"].empty:
+            max_h = content_recs["hybrid_score"].max()
+            content_recs.loc[content_recs["franchise_score"] >= 0.99, "hybrid_score"] = max_h * 1.5
+        content_recs["hybrid_score"] += 1.5 * content_recs["franchise_score"]
+
+        # mark franchise match for explanation
+        content_recs["Franchise Match"] = content_recs["franchise_score"] > 0.0
+
+        # --- Normalize to match % (safe)
         min_score = content_recs["hybrid_score"].min()
         max_score = content_recs["hybrid_score"].max()
         eps = 1e-5
-
-        content_recs["match percentage"] = ((content_recs["hybrid_score"] - min_score + eps) / (max_score - min_score + eps)) * 100
+        content_recs["match percentage"] = ((content_recs["hybrid_score"] - min_score + eps) /
+                                            (max_score - min_score + eps)) * 100
         content_recs["match percentage"] = content_recs["match percentage"].round(1)
 
-        # Filter out very low match percentages (optional threshold, tweakable)
+        # Filter low matches
         content_recs = content_recs[content_recs["match percentage"] > 5.0]
-        if len(content_recs) < top_n:
-            print(f"[INFO] Only {len(content_recs)} strong recommendations found (above 5% match).")
-
-
         if content_recs.empty:
             raise ValueError("No sufficiently similar movies found to recommend.")
 
-
-        input_movie = self.metadata[self.metadata["id"] == movie_id].iloc[0]
-        input_director = input_movie["crew"]
-        input_cast = input_movie["cast"].split()
-
-        content_recs["same_director"] = content_recs["crew"].apply(lambda x: input_director in x)
-        content_recs["shared_actor"] = content_recs["cast"].apply(lambda x: any(actor in x.split() for actor in input_cast))
-
-        content_recs.rename(columns={
-            "shared_actor": "Shared Actor",
-            "same_director": "Same Director"
-        }, inplace=True)
-
+        # Explanation column (safe lookups)
         def explain(row):
             reasons = []
-            if row["Same Director"]: reasons.append("✅ Same Director")
-            if row["Shared Actor"]: reasons.append("🎭 Shared Actor")
-            if row["genre_boost"] > 0.3: reasons.append("🎯 Genre Match")
-            if row["content_score"] > 0.5: reasons.append("🧠 Content Similarity")
+            if row.get("Franchise Match", False):
+                reasons.append("🎬 Franchise/Sequel")
+            if row.get("Same Director", False):
+                reasons.append("✅ Same Director")
+            if row.get("Shared Actor", False):
+                reasons.append("🎭 Shared Actor")
+            if row.get("genre_boost", 0) > 0.3:
+                reasons.append("🎯 Genre Match")
+            if row.get("content_score", 0) > 0.5:
+                reasons.append("🧠 Content Similarity")
+            if row.get("title_boost", 0) > 0:
+                reasons.append("🎬 Title Overlap")
+            if "original_language" in row and "original_language" in input_movie:
+                if row["original_language"] == input_movie.get("original_language"):
+                    reasons.append("🌍 Same Language")
+            if "production_countries" in row and "production_countries" in input_movie:
+                if str(input_movie.get("production_countries", "")) in str(row["production_countries"]):
+                    reasons.append("🇮🇳 Same Country")
             return ", ".join(reasons)
 
         content_recs["Why Recommended"] = content_recs.apply(explain, axis=1)
-        
-        # Fetch posters and IMDb links using OMDb API
+
+        # Fetch posters + IMDb links
         content_recs["Poster"] = None
         content_recs["IMDb Link"] = None
-
         for idx, row in content_recs.iterrows():
-            poster, imdb = self.fetch_omdb_info(row["title"], row["year"])
+            poster, imdb = self.fetch_omdb_info(row["title"], row.get("year", None))
             content_recs.at[idx, "Poster"] = poster
             content_recs.at[idx, "IMDb Link"] = imdb
 
-        # Return only selected columns (no need to drop explicitly)
+        # Final columns & ordering
         final_cols = ["title", "genres", "year", "match percentage", "Why Recommended", "Poster", "IMDb Link"]
-        return content_recs.sort_values("match percentage", ascending=False)[final_cols].reset_index(drop=True)
-
-
+        content_recs = content_recs.sort_values("match percentage", ascending=False).head(top_n)
+        return content_recs[final_cols].reset_index(drop=True)
 
 
 if __name__ == "__main__":
@@ -475,7 +651,7 @@ if __name__ == "__main__":
         print("\nTop Recommendations:")
         for i, row in recommendations.iterrows():
             print(f"{i+1}. 🎬 {row['title']} ({row['year']}) - {row['match percentage']}% match")
-            print(f"    Why: {row['Why Recommended']}")
+            print(f"    Why Recommended: {row['Why Recommended']}")
             if row['IMDb Link']:
                 print(f"    IMDb: {row['IMDb Link']}")
             if row['Poster']:
