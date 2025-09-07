@@ -13,7 +13,7 @@ from groq import Groq
 
 from dotenv import load_dotenv
 load_dotenv(dotenv_path="omdbapi.env")
-from src.download_data import download_data
+from download_data import download_data
 
 
 # Ensure all datasets exist before loading
