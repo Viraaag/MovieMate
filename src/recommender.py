@@ -13,6 +13,53 @@ from groq import Groq
 
 from dotenv import load_dotenv
 load_dotenv(dotenv_path="omdbapi.env")
+from download_data import download_data
+
+# Ensure all datasets exist before loading
+download_data()
+
+import pandas as pd
+
+files = [
+    "data/movies_metadata.csv",
+    "data/movies_metadata_updated.csv",
+    "data/movies_metadata_ai.csv",
+    "data/credits.csv",
+    "data/keywords.csv"
+]
+
+for f in files:
+    df = pd.read_csv(f)
+    print(f"{f}: {df.columns.tolist()}")
+
+if 'movie_id' in df.columns:
+    df.rename(columns={'movie_id': 'id'}, inplace=True)
+
+
+
+import pandas as pd
+import pickle
+
+# Load CSVs
+metadata = pd.read_csv("data/movies_metadata.csv", low_memory=False)
+credits = pd.read_csv("data/credits.csv")
+keywords = pd.read_csv("data/keywords.csv")
+ratings = pd.read_csv("data/ratings.csv")
+links = pd.read_csv("data/links.csv")
+movies_metadata_updated = pd.read_csv("data/movies_metadata_updated.csv")
+movies_metadata_ai = pd.read_csv("data/movies_metadata_ai.csv")
+ratings_small = pd.read_csv("data/ratings_small.csv")
+
+# Load PKL files
+with open("data/tfidf_matrix.pkl", "rb") as f:
+    tfidf_matrix = pickle.load(f)
+
+with open("data/tfidf_vectorizer.pkl", "rb") as f:
+    tfidf_vectorizer = pickle.load(f)
+
+with open("data/processed_metadata.pkl", "rb") as f:
+    processed_metadata = pickle.load(f)
+
 
 
 
@@ -56,24 +103,35 @@ class HybridRecommender:
 
     def _prepare_models(self):
         print("[INFO] Loading and merging metadata, credits, and keywords...")
+
+        # Load main metadata
         metadata = pd.read_csv(self.metadata_path, low_memory=False)
+        metadata['id'] = metadata['id'].astype(str).str.strip()
 
-        if os.path.exists(self.ai_data_path):
-            ai_movies = pd.read_csv(self.ai_data_path, low_memory=False)
-            print(f"[INFO] Loaded {len(ai_movies)} AI-fetched movies.")
-            metadata = pd.concat([metadata, ai_movies], ignore_index=True)
-
+        # Load credits and keywords
         credits = pd.read_csv(self.credits_path)
         keywords = pd.read_csv(self.keywords_path)
+        for df in [credits, keywords]:
+            df['id'] = df['id'].astype(str).str.strip()
 
-        metadata['id'] = metadata['id'].astype(str)
-        credits['id'] = credits['id'].astype(str)
-        keywords['id'] = keywords['id'].astype(str)
+        # Load AI-fetched movies if any
+        if os.path.exists(self.ai_data_path):
+            ai_movies = pd.read_csv(self.ai_data_path, low_memory=False)
+            ai_movies['id'] = ai_movies['id'].astype(str).str.strip()  # ensure id exists & is clean
+            print(f"[INFO] Loaded {len(ai_movies)} AI-fetched movies.")
+            metadata = pd.concat([metadata, ai_movies], ignore_index=True)
+        # Remove duplicates based on movie 'id' to avoid repeated recommendations
+        metadata = metadata.drop_duplicates(subset='id', keep='last').reset_index(drop=True)
+            
 
+        # Keep only needed columns in metadata
         metadata = metadata[["id", "title", "overview", "genres", "release_date", "original_language", "production_countries"]]
+
+        # Merge with credits and keywords
         metadata = metadata.merge(credits, on='id').merge(keywords, on='id')
         metadata = metadata.dropna(subset=["cast", "crew", "genres", "keywords"])
 
+        # Parsing functions
         def parse_features(text, key=None):
             try:
                 if not isinstance(text, str): return ""
@@ -114,11 +172,6 @@ class HybridRecommender:
         metadata["original_language"] = metadata["original_language"].astype(str)
         metadata["production_countries"] = metadata["production_countries"].apply(lambda x: parse_features(x, "name"))
 
-        if metadata["soup"].apply(lambda x: isinstance(x, float)).any():
-            print("[ERROR] Float found in soup column:")
-            print(metadata[metadata["soup"].apply(lambda x: isinstance(x, float))][["title", "soup"]])
-            raise ValueError("Float detected in soup column")
-
         self.metadata = metadata.reset_index(drop=True)
 
         print("[INFO] Building content-based TF-IDF model...")
@@ -147,6 +200,7 @@ class HybridRecommender:
             joblib.dump(self.cf_model, self.cf_model_path)
 
         print("[INFO] Model training complete.")
+
 
     def refresh_tfidf_model(self):
         print("[INFO] Refreshing TF-IDF model with new movies...")
