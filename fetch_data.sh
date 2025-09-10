@@ -2,7 +2,10 @@
 # fetch_data.sh
 # Downloads all MovieMate datasets and model files from Google Drive into data/
 # Skips files that already exist
+
+# Ensure gdown is installed and up-to-date
 pip install --upgrade gdown
+
 echo "[INFO] Creating data/ folder..."
 mkdir -p data
 
@@ -25,7 +28,8 @@ for file in "${!files[@]}"; do
         echo "[INFO] $file already exists, skipping download."
     else
         echo "[INFO] Downloading $file..."
-        gdown --id ${files[$file]} -O data/$file
+        # Use full Google Drive URL and --fuzzy to handle large file confirmation automatically
+        gdown "https://drive.google.com/uc?id=${files[$file]}" --fuzzy -O data/$file
     fi
 done
 
