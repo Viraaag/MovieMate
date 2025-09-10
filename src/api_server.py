@@ -154,4 +154,4 @@ async def legacy_recommend(movie_title: str, user_id: int = 1, top_n: int = 5):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("api_server:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("src.api_server:app", host="0.0.0.0", port=port, reload=True)
