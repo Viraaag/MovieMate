@@ -11,6 +11,20 @@ import difflib
 import datetime
 from groq import Groq
 
+if os.getenv("RENDER") is None:
+    from dotenv import load_dotenv
+    load_dotenv("api.env")
+
+# Now pull API keys from environment (Render or local)
+OMDB_API_KEY = os.getenv("OMDB_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+if not OMDB_API_KEY:
+    print("[WARN] OMDB_API_KEY not found. Make sure it's set in Render or .env")
+
+if not GROQ_API_KEY:
+    print("[WARN] GROQ_API_KEY not found. Make sure it's set in Render or .env")
+
 from dotenv import load_dotenv
 load_dotenv(dotenv_path="omdbapi.env")
 from download_data import download_data
@@ -222,17 +236,14 @@ class HybridRecommender:
             content_recs["hybrid_score"] += 0.05 * self.metadata.loc[content_recs.index, "vote_average"].fillna(0)
 
     def fetch_omdb_info(self, title, year=None):
-        import os
-        from dotenv import load_dotenv
-        load_dotenv("api.env")  
-        api_key = os.getenv("OMDB_API_KEY")
-        if not api_key:
+        """Fetch poster and IMDb link from OMDb API using global OMDB_API_KEY."""
+        if not OMDB_API_KEY:
             # If the user didn't set an OMDB key, skip silently.
             return None, None
-        
+
         base_url = "http://www.omdbapi.com/"
-        params = {"t": title, "apikey": api_key}
-        
+        params = {"t": title, "apikey": OMDB_API_KEY}
+
         # Safe year handling: only add 'y' if year exists and is not pd.NA
         if year is not None and pd.notna(year):
             try:
@@ -241,7 +252,7 @@ class HybridRecommender:
             except Exception:
                 # If casting fails, skip attaching year (still search by title)
                 pass
-        
+
         try:
             resp = requests.get(base_url, params=params, timeout=8)
             if resp.status_code == 200:
@@ -253,8 +264,9 @@ class HybridRecommender:
                     return poster, imdb_link
         except Exception as e:
             print(f"[WARN] OMDb fetch failed for '{title}': {e}")
-        
-        return None, None    
+
+        return None, None
+    
 
 
 
@@ -309,21 +321,16 @@ class HybridRecommender:
                 raise ValueError(f"No similar movie titles found for '{title}'.")
 
     def fetch_and_add_movie_from_ai(self, title):
-        import os
-        from openai import OpenAI
-        from dotenv import load_dotenv
-
-    # Load Groq API key from api.env
-        load_dotenv("api.env")
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            print("[ERROR] GROQ_API_KEY not found in api.env")
+        """Fetch missing movie metadata using Groq API (AI fallback)."""
+        if not GROQ_API_KEY:
+            print("[ERROR] GROQ_API_KEY not set. Skipping AI fetch.")
             return None
-            
 
-    # Initialize Groq client
+        from openai import OpenAI
+
+        # Initialize Groq client
         client = OpenAI(
-            api_key=api_key,
+            api_key=GROQ_API_KEY,
             base_url="https://api.groq.com/openai/v1"
         )
 
@@ -345,27 +352,26 @@ class HybridRecommender:
         try:
             response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]              
+                messages=[{"role": "user", "content": prompt}]
             )
+
             import re
             import json5
 
             content = response.choices[0].message.content.strip()
 
-            # Extract the first JSON object from the text using regex
+            # Extract JSON object from response
             json_match = re.search(r"\{[\s\S]*\}", content)
             if not json_match:
                 raise ValueError("No valid JSON found in Groq response.")
 
-                
             json_str = json_match.group(0)
             print("[INFO] Extracted JSON:\n", json_str)
 
             try:
                 ai_movie = json5.loads(json_str)
-                # Normalize fields: convert list fields to space-separated strings
+
+                # Normalize fields
                 ai_movie["genres"] = " ".join(ai_movie["genres"]) if isinstance(ai_movie["genres"], list) else str(ai_movie["genres"])
                 ai_movie["keywords"] = " ".join(ai_movie["keywords"]) if isinstance(ai_movie["keywords"], list) else str(ai_movie["keywords"])
 
@@ -382,15 +388,14 @@ class HybridRecommender:
 
                 ai_movie["cast"] = normalize_people_field(ai_movie.get("cast", []))
                 ai_movie["crew"] = normalize_people_field(ai_movie.get("crew", []))
-
                 ai_movie["production_countries"] = " ".join(ai_movie["production_countries"]) if isinstance(ai_movie["production_countries"], list) else str(ai_movie["production_countries"])
 
             except Exception as e:
                 print("[ERROR] Failed to parse JSON:", e)
                 return None
 
+            # Generate new ID
             ai_movie["id"] = str(max(self.metadata["id"].astype(str).astype(int), default=100000) + 1)
-
 
             # Construct soup and year
             ai_movie["soup"] = (
@@ -402,12 +407,11 @@ class HybridRecommender:
             )
             ai_movie["year"] = pd.to_datetime(ai_movie["release_date"], errors="coerce").year
 
-            # Append to metadata
-            # Append to metadata (in-memory only for now)
+            # Append in-memory
             self.metadata = pd.concat([self.metadata, pd.DataFrame([ai_movie])], ignore_index=True)
             self.new_movies_buffer.append(ai_movie)
 
-            # Persist AI-fetched movie to disk
+            # Persist to disk
             if os.path.exists(self.ai_data_path):
                 ai_df = pd.read_csv(self.ai_data_path)
                 ai_df = pd.concat([ai_df, pd.DataFrame([ai_movie])], ignore_index=True)
@@ -417,8 +421,7 @@ class HybridRecommender:
 
             print(f"[INFO] '{title}' added to dataset and saved for future use.")
 
-
-            # Rebuild TF-IDF model to include the new movie
+            # Rebuild TF-IDF model
             from sklearn.feature_extraction.text import TfidfVectorizer
             tfidf = TfidfVectorizer(stop_words="english")
             self.tfidf_matrix = tfidf.fit_transform(self.metadata["soup"].fillna(""))
@@ -427,10 +430,13 @@ class HybridRecommender:
             print(f"[INFO] '{title}' added to the dataset and models updated.")
             print(f"[DEBUG] New movie ID: {ai_movie['id']}")
             print(f"[DEBUG] New movie index in TF-IDF: {self.movie_indices[ai_movie['id']]}")
+
             return ai_movie["id"]
+
         except Exception as e:
             print("[ERROR] Failed to fetch movie from Groq:", e)
             return None
+
     def refresh_tfidf_model(self):
         """Rebuild TF-IDF model after batch of AI movies."""
         print("[INFO] Refreshing TF-IDF model with new movies...")
