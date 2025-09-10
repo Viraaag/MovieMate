@@ -25,7 +25,7 @@ for file in "${!files[@]}"; do
         echo "[INFO] $file already exists, skipping download."
     else
         echo "[INFO] Downloading $file..."
-        gdown https://drive.google.com/uc?id=${files[$file]} -O data/$file
+        gdown --id ${files[$file]} -O data/$file
     fi
 done
 
