@@ -27,7 +27,7 @@ if not GROQ_API_KEY:
 
 from dotenv import load_dotenv
 load_dotenv(dotenv_path="omdbapi.env")
-from download_data import download_data
+from src.download_data import download_data
 
 
 # Ensure all datasets exist before loading
