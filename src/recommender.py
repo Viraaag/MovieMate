@@ -10,14 +10,29 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 import difflib
 import datetime
 from groq import Groq
+import boto3
 
 if os.getenv("RENDER") is None:
     from dotenv import load_dotenv
     load_dotenv("api.env")
 
+def download_from_s3(s3_bucket, s3_key, local_path):
+    """Download a file from S3 if it doesn't exist locally."""
+    if os.path.exists(local_path):
+        return
+
+    print(f"[INFO] Downloading {s3_key} from S3 bucket {s3_bucket}...")
+    s3 = boto3.client('s3')
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    s3.download_file(s3_bucket, s3_key, local_path)
+    print(f"[INFO] Saved to {local_path}")
 # Now pull API keys from environment (Render or local)
 OMDB_API_KEY = os.getenv("OMDB_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION")
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 
 if not OMDB_API_KEY:
     print("[WARN] OMDB_API_KEY not found. Make sure it's set in Render or .env")
@@ -120,7 +135,19 @@ class HybridRecommender:
         print("[INFO] Loading and merging metadata, credits, and keywords...")
 
         # Load main metadata
+        S3_BUCKET = os.getenv("S3_BUCKET_NAME")
+
+        for path in [self.metadata_path, self.credits_path, self.keywords_path, self.ratings_path]:
+            filename = os.path.basename(path)
+            if not os.path.exists(path):
+                download_from_s3(S3_BUCKET, f"data/{filename}", path)
+
+        # Now load CSVs
         metadata = pd.read_csv(self.metadata_path, low_memory=False)
+        credits = pd.read_csv(self.credits_path)
+        keywords = pd.read_csv(self.keywords_path)
+        ratings = pd.read_csv(self.ratings_path)
+
         metadata['id'] = metadata['id'].astype(str).str.strip()
 
         # Load credits and keywords

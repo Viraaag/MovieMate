@@ -1,40 +1,52 @@
 # src/download_data.py
 import os
-import requests
+import boto3
 
-# Map of files to Google Drive IDs
+# Map of files to S3 keys
 FILE_MAP = {
-    "movies_metadata.csv": "1AURS3n9O6pJG7a_qkirKcSvL0vGt8fFm",
-    "credits.csv": "1GOO7s4HymUqcfDMM6OcA9vggxpvl4O7h",
-    "keywords.csv": "1Qq5YsgwnzvRlkNW8erK1u3B8g9Rs4g53",
-    "ratings.csv": "1mkenpgUTJOg3TJ7NkpDaXMz7w3V6nTeQ",
-    "links.csv": "1CEw0G3IsF6VEOhmXhMgF4jd-GRDiuvE8",
-    "movies_metadata_updated.csv": "1RsYgsE7vsQZ2Ct2ic80RRLACPymzn2un",
-    "movies_metadata_ai.csv": "11wayi_2wVPcQWLYOgvhbnQTU98PEXjHn",
-    "ratings_small.csv": "10f6OIlpFUWWh1yR90kra-Two-eNx3Dz_",
-    "tfidf_matrix.pkl": "1CApLW_uks1DplYxSXdqHvhRonbNYOV7G",
-    "tfidf_vectorizer.pkl": "1tMruoELss1mAD0OD6IZ_-NZVuk0PZON6",
-    "processed_metadata.pkl": "169RVGFSGD-vdjHSwpF0ATDjaqj4hYzTT",
+    "movies_metadata.csv": "movies_metadata.csv",
+    "credits.csv": "credits.csv",
+    "keywords.csv": "keywords.csv",
+    "ratings.csv": "ratings.csv",
+    "links.csv": "links.csv",
+    "movies_metadata_updated.csv": "movies_metadata_updated.csv",
+    "movies_metadata_ai.csv": "movies_metadata_ai.csv",
+    "ratings_small.csv": "ratings_small.csv",
+    "tfidf_matrix.pkl": "tfidf_matrix.pkl",
+    "tfidf_vectorizer.pkl": "tfidf_vectorizer.pkl",
+    "processed_metadata.pkl": "processed_metadata.pkl",
 }
 
-def download_from_gdrive(file_id, destination):
-    """Download a file from Google Drive public link."""
-    url = f"https://drive.google.com/uc?id={file_id}"
-    response = requests.get(url, stream=True)
-    os.makedirs(os.path.dirname(destination), exist_ok=True)
-    with open(destination, "wb") as f:
-        for chunk in response.iter_content(32768):
-            f.write(chunk)
+# Pull these from environment
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+
+def download_from_s3(s3_bucket, s3_key, local_path):
+    """Download a file from S3 if it doesn't exist locally."""
+    if os.path.exists(local_path):
+        return
+
+    print(f"[INFO] Downloading {s3_key} from S3 bucket {s3_bucket}...")
+    s3 = boto3.client(
+        "s3",
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+        region_name=AWS_DEFAULT_REGION,
+    )
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    s3.download_file(s3_bucket, s3_key, local_path)
+    print(f"[INFO] Saved to {local_path}")
 
 def download_data():
-    """Download all files if missing."""
-    for filename, file_id in FILE_MAP.items():
-        path = os.path.join("data", filename)
-        if not os.path.exists(path):
-            print(f"[INFO] Downloading {filename}...")
-            download_from_gdrive(file_id, path)
-        else:
-            print(f"[INFO] {filename} already exists, skipping.")
+    """Download all files from S3 if missing."""
+    if not S3_BUCKET_NAME:
+        raise ValueError("[ERROR] S3_BUCKET_NAME not set in environment!")
+
+    for filename, s3_key in FILE_MAP.items():
+        local_path = os.path.join("data", filename)
+        download_from_s3(S3_BUCKET_NAME, s3_key, local_path)
 
 if __name__ == "__main__":
     download_data()
