@@ -12,6 +12,8 @@ import datetime
 from groq import Groq
 import boto3
 
+USE_SMALL = os.getenv("USE_SMALL_DATASET", "false").lower() == "true"
+
 if os.getenv("RENDER") is None:
     from dotenv import load_dotenv
     load_dotenv("api.env")
@@ -40,30 +42,13 @@ if not OMDB_API_KEY:
 if not GROQ_API_KEY:
     print("[WARN] GROQ_API_KEY not found. Make sure it's set in Render or .env")
 
-from dotenv import load_dotenv
-load_dotenv(dotenv_path="omdbapi.env")
+
 from src.download_data import download_data
 
 
 # Ensure all datasets exist before loading
 download_data()
 
-import pandas as pd
-
-files = [
-    "data/movies_metadata.csv",
-    "data/movies_metadata_updated.csv",
-    "data/movies_metadata_ai.csv",
-    "data/credits.csv",
-    "data/keywords.csv"
-]
-
-for f in files:
-    df = pd.read_csv(f)
-    print(f"{f}: {df.columns.tolist()}")
-
-if 'movie_id' in df.columns:
-    df.rename(columns={'movie_id': 'id'}, inplace=True)
 
 
 
@@ -74,11 +59,16 @@ import pickle
 metadata = pd.read_csv("data/movies_metadata.csv", low_memory=False)
 credits = pd.read_csv("data/credits.csv")
 keywords = pd.read_csv("data/keywords.csv")
-ratings = pd.read_csv("data/ratings.csv")
+if USE_SMALL:
+    ratings_path = "data/ratings_small.csv"
+else:
+    ratings_path = "data/ratings.csv"
+
+print(f"[INFO] Using ratings file: {ratings_path}")
+
 links = pd.read_csv("data/links.csv")
 movies_metadata_updated = pd.read_csv("data/movies_metadata_updated.csv")
 movies_metadata_ai = pd.read_csv("data/movies_metadata_ai.csv")
-ratings_small = pd.read_csv("data/ratings_small.csv")
 
 # Load PKL files
 with open("data/tfidf_matrix.pkl", "rb") as f:
