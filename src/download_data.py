@@ -4,18 +4,19 @@ import boto3
 
 # Map of files to S3 keys
 FILE_MAP = {
-    "movies_metadata.csv": "movies_metadata.csv",
-    "credits.csv": "credits.csv",
-    "keywords.csv": "keywords.csv",
-    "ratings.csv": "ratings.csv",
-    "links.csv": "links.csv",
-    "movies_metadata_updated.csv": "movies_metadata_updated.csv",
-    "movies_metadata_ai.csv": "movies_metadata_ai.csv",
-    "ratings_small.csv": "ratings_small.csv",
-    "tfidf_matrix.pkl": "tfidf_matrix.pkl",
-    "tfidf_vectorizer.pkl": "tfidf_vectorizer.pkl",
-    "processed_metadata.pkl": "processed_metadata.pkl",
+    "movies_metadata.csv": "data/movies_metadata.csv",
+    "credits.csv": "data/credits.csv",
+    "keywords.csv": "data/keywords.csv",
+    "ratings.csv": "data/ratings.csv",
+    "links.csv": "data/links.csv",
+    "movies_metadata_updated.csv": "data/movies_metadata_updated.csv",
+    "movies_metadata_ai.csv": "data/movies_metadata_ai.csv",
+    "ratings_small.csv": "data/ratings_small.csv",
+    "tfidf_matrix.pkl": "data/tfidf_matrix.pkl",
+    "tfidf_vectorizer.pkl": "data/tfidf_vectorizer.pkl",
+    "processed_metadata.pkl": "data/processed_metadata.pkl",
 }
+
 
 # Pull these from environment
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
