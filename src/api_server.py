@@ -153,5 +153,5 @@ async def legacy_recommend(movie_title: str, user_id: int = 1, top_n: int = 5):
     return await recommend(req)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 10000))
     uvicorn.run("src.api_server:app", host="0.0.0.0", port=port, reload=True)
